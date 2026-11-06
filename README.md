@@ -2,6 +2,10 @@
 
 DeepSeek Harness（dsh）插件：在输入框工具行显示 **DeepSeek 余额 / GLM Coding Plan 配额**徽标，并提供逐 key 的用量管理与图表。
 
+| 徽标与数据源面板 | 管理弹窗 |
+| :---: | :---: |
+| ![徽标与数据源面板](docs/screenshot-badge.png) | ![管理弹窗](docs/screenshot-manager.png) |
+
 ## 功能
 
 ### 徽标（输入框工具行右侧）

@@ -2,6 +2,10 @@
 
 A DeepSeek Harness (dsh) plugin that shows a **DeepSeek balance / GLM Coding Plan quota** badge in the composer tool row, with per-key usage management and charts.
 
+| Badge and source panel | Management dialog |
+| :---: | :---: |
+| ![Badge and source panel](docs/screenshot-badge.png) | ![Management dialog](docs/screenshot-manager.png) |
+
 ## Features
 
 ### Badge (composer tool row)
