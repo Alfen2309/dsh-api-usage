@@ -13,9 +13,9 @@ A DeepSeek Harness (dsh) plugin that shows a **DeepSeek balance / GLM Coding Pla
 One compact badge showing the **currently selected source**:
 
 ```
-📊 ≈¥6.85/¥77316.57        ← DeepSeek: today's spend / balance
-📊 1,222/12,000            ← GLM: 5-hour window used / total
-📊 Not selected            ← nothing to show
+📊 ≈¥9,999.99/¥9,999,999.00   ← DeepSeek: today's spend / balance
+📊 888/12,000                 ← GLM: 5-hour window used / total
+📊 Not selected               ← nothing to show
 ```
 
 - Selection: manual choice > **signed-in DeepSeek account by default** > none
@@ -30,8 +30,8 @@ One compact badge showing the **currently selected source**:
 One card per source, all with the same structure:
 
 ```
-★  🔑 DeepSeek  ···ada0              ¥77316.57   ☆  ●
-   ≈¥6.85 · 457 calls · available · granted ¥0 · topped up ¥77316.57
+★  🔑 DeepSeek  ···xxxx              ¥9,999,999.00   ☆  ●
+   ≈¥9,999.99 · 888 calls · available · granted ¥0 · topped up ¥9,999,999.00
    [last 7 days bars]  [last 90 days calendar heatmap]
 ```
 
