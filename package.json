@@ -1,0 +1,70 @@
+{
+  "name": "dsh-api-usage",
+  "version": "0.2.0",
+  "description": "API balance & usage monitor for DeepSeek Harness: a composer badge plus a per-key manager showing DeepSeek balances/today's spend, GLM Coding Plan quotas, and 7-day/90-day charts.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Alfen2309 (https://github.com/Alfen2309)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alfen2309/dsh-api-usage.git"
+  },
+  "homepage": "https://github.com/Alfen2309/dsh-api-usage",
+  "bugs": {
+    "url": "https://github.com/Alfen2309/dsh-api-usage/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "balance",
+    "usage",
+    "glm",
+    "coding-plan"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.1"
+  },
+  "scripts": {
+    "build": "node build-client.mjs",
+    "check": "node --check index.js && node --check src/client.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": ">=0.2.1-rc.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.2.1-rc.1",
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "devDependencies": {
+    "echarts": "^6.1.0",
+    "esbuild": "^0.28.2"
+  }
+}

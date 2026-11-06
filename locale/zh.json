@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "API 用量监控",
+    "description": "在侧边栏底部常驻显示 DeepSeek 余额与 GLM Coding Plan 配额（5 小时/周窗口、今日消耗），并在设置中提供逐 key 管理页；自动发现 LLM provider 配置里的 API key。"
+  }
+}

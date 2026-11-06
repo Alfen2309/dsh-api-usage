@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "API usage monitor",
+    "description": "Shows DeepSeek balances and GLM Coding Plan quotas (5-hour/weekly windows, today's spend) persistently in the sidebar footer, with a per-key management page in Settings; API keys are discovered automatically from LLM provider configuration."
+  }
+}
