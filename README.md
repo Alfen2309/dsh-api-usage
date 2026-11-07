@@ -61,18 +61,20 @@ GLM host 默认 `https://open.bigmodel.cn`，国际站可在插件配置改成 `
 
 ### DeepSeek 今日消耗（本地记账）
 
-DeepSeek **没有公开发用量接口**，插件在 Host 侧监听 `llm/stream`，把每次调用上报的 usage 按官方价目表计价，按天累计：
+DeepSeek **没有公开发用量接口**，插件在 Host 侧监听 `llm/stream`，把每次调用上报的 usage 按天登记；网页搜索按请求次数计费，也会一并计数。金额统一在读取时用官方价目表计算：
 
 ```
 usage chunk → { inputTokens(缓存未命中), cacheReadTokens(命中), outputTokens }
-            → 按 DeepSeek 官方 CNY 价目表计价（高峰/空闲两档）
+            → 按高峰 / 空闲两个价格档位分别累计 token（读取时再计价）
             → 按 provider 渠道拆分（账号渠道 vs 各 API key 渠道）
-            → 落盘 $DSH_HOME/storages/api-usage/ledger.json
+            → 落盘 $DSH_HOME/storages/api-usage/ledger.json（v2：token 分桶）
 ```
 
 - 只统计 **DSH 自身**的调用，其它客户端用同一账号的消耗不计入
-- 价目表内置：`deepseek-flash`、`deepseek-v4-pro`（高峰期 = 空闲期 × 2，高峰为北京时间周一至周五 9:00–12:00、14:00–18:00）
-- 账号渠道和每个 API key 渠道**分别计费**，互不混算
+- 价目表内置 `deepseek-flash`、`deepseek-v4-pro`（高峰期 = 空闲期 × 2，高峰为北京时间周一至周五 9:00–12:00、14:00–18:00；法定节假日暂未建模）
+- 网页搜索：DSH 的搜索走 DeepSeek Messages 的 `web_search` 服务端工具，插件按 `web/deepseek-search-llm-request` 会话事件计请求数，按 **5 元 / 1000 次** 估算；该请求自身的模型 token 无法从 harness 观测，不计入
+- 账本只存 token 分桶，金额在读取时计算——官方调价后新数据自动按新价重算（迁移前已计价的旧数据保留原值）
+- 默认保留最近 400 天（`retainDays` 可调）；账号渠道和每个 API key 渠道分别计费，互不混算
 
 ## 安装
 
@@ -98,6 +100,7 @@ dsh plugin --profile desktop add "link:C:\MY\project\dsh-plugins\dsh-api-usage"
 | `glmBaseURL` | `https://open.bigmodel.cn` | GLM API 基础地址（国际站用 `https://api.z.ai`） |
 | `pollSeconds` | `60` | 自动刷新间隔（秒） |
 | `lowBalance` | `20` | 低余额告警阈值（数字变色） |
+| `retainDays` | `400` | 本地账本保留天数（超过自动裁剪） |
 | `selectedSource` | `""` | 徽标显示的数据源 id（浏览器本地优先） |
 | `hidden` | `[]` | 不计入徽标聚合的数据源 |
 | `extraRefs` | `[]` | 手动补充的凭据引用名 |
@@ -125,6 +128,7 @@ npm run check        # 语法检查
 - DSH 凭据引用不可枚举：插件从 provider 配置、`llm` 目录和常用引用名推断；未绑定的 key 请用「添加 API key」或 `extraRefs`
 - 多个 provider 指向**同一个** `apiKeyEnv` 引用时，在 DSH 层面就是同一个 key，余额相同
 - DeepSeek 今日消耗为本地估算，仅覆盖 DSH 调用；充值/跨客户端消耗不会反映
+- 今日消耗从插件加载时刻开始记账，重启/新装当天可能偏低；网页搜索只计按次费用，不含其模型 token；法定节假日未按闲时价计算
 - GLM Coding Plan 是订阅制，没有"余额"概念，展示的是配额使用率与重置时间
 - 设置弹窗无法从插件程序化打开（DSH 未暴露该 API），因此管理界面以插件自有弹窗呈现
 

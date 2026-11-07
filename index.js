@@ -40,6 +40,8 @@ const Config = z.object({
   glmBaseURL: z.string().default('https://open.bigmodel.cn'),
   pollSeconds: z.number().default(60),
   lowBalance: z.number().default(20),
+  /** Days of metered history kept in the local ledger (default ~13 months). */
+  retainDays: z.number().default(400),
   /** Footer presentation retained for compatibility. */
   footerStyle: z.string().default('detailed'),
   /** Source id shown on the composer badge; empty = signed-in account. */
@@ -433,16 +435,21 @@ async function removeManagedKey(ctx, id) {
 /**
  * The DeepSeek balance API exposes no usage history, so today's DeepSeek
  * spend is metered locally: every `llm/stream` call that routes to a DeepSeek
- * provider contributes its usage block, priced against the official CNY
- * table. Nothing here performs network I/O; the ledger is a small JSON file
- * under `$DSH_HOME/storages/api-usage/`.
+ * provider contributes its usage block, and every recorded search request adds
+ * its per-request fee. Token buckets are kept per pricing tier (peak/idle); the
+ * amount is computed from the official rate card on read, so a price change or
+ * an audit never needs re-charging the ledger. Nothing here performs network
+ * I/O; the ledger is a small JSON file under `$DSH_HOME/storages/api-usage/`.
  *
- * Official prices (CNY per 1M tokens, peak = idle × 2):
- *   flash:    idle 0.02 / 1 / 4     peak 0.04 / 2 / 8
- *   v4-pro:   idle 0.15 / 4.5 / 13.5 peak 0.30 / 9 / 27
- * Peak = Beijing time Mon–Fri 09:00–12:00 and 14:00–18:00, excluding public
- * holidays (holiday dates are not modelled; configure `peakHolidays` if the
- * local calendar matters).
+ * Official rates (CNY per 1M tokens, peak = idle × 2):
+ *   flash  idle 0.02 / 1 / 4        peak 0.04 / 2 / 8
+ *   pro    idle 0.15 / 4.5 / 13.5   peak 0.30 / 9 / 27
+ * Peak = Beijing time Mon–Fri 09:00–12:00 and 14:00–18:00, excluding Chinese
+ * public holidays (holiday dates are not modelled yet).
+ * Search/Fetch server-tool requests are billed per successful request
+ * (CNY 5 / 1,000) and are counted per recorded search request as an estimate —
+ * the search model's own tokens are not exposed to the Harness, so that part
+ * stays unmetered.
  */
 const DEEPSEEK_PRICING = {
   flash: {
@@ -454,6 +461,15 @@ const DEEPSEEK_PRICING = {
     peak: { cacheHit: 0.3, cacheMiss: 9, output: 27 },
   },
 }
+
+/** Search/Fetch server-tool request price per successful request (CNY). */
+const SEARCH_REQUEST_PRICE = 5 / 1000
+
+/** Ledger schema: v2 stores token buckets by pricing tier. */
+const LEDGER_VERSION = 2
+const DEFAULT_RETAIN_DAYS = 400
+/** Debounced persistence delay: a crash loses at most this much metering. */
+const FLUSH_DELAY_MS = 500
 
 /** Stable ledger location; `$DSH_HOME` is set by the harness shell environment. */
 function ledgerPaths() {
@@ -478,11 +494,11 @@ function isPeakNow(date) {
   return (hour >= 9 && hour < 12) || (hour >= 14 && hour < 18)
 }
 
-/** Pick the price family for a DeepSeek model id. */
+/** Pick the price family ('flash' | 'pro') for a DeepSeek model id. */
 function priceFamily(model) {
   const id = typeof model === 'string' ? model.toLowerCase() : ''
-  if (id.includes('pro')) return DEEPSEEK_PRICING.pro
-  if (id.includes('flash')) return DEEPSEEK_PRICING.flash
+  if (id.includes('pro')) return 'pro'
+  if (id.includes('flash')) return 'flash'
   return null
 }
 
@@ -538,62 +554,183 @@ function extractUsage(chunk) {
   }
 }
 
-/** Price one usage block in CNY (prices are per 1M tokens). */
-function priceUsage(usage, family, peak) {
-  const tier = peak ? family.peak : family.idle
-  return (
-    (usage.cacheHit * tier.cacheHit
-      + (usage.cacheMiss + usage.cacheWrite) * tier.cacheMiss
-      + usage.output * tier.output)
-    / 1_000_000
-  )
+const TOKEN_FIELDS = ['cacheHit', 'cacheMiss', 'cacheWrite', 'output']
+
+/** One empty per-tier token bucket. */
+function emptyTier() {
+  return { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, calls: 0 }
 }
 
-/** Split one day bucket into per-provider totals (account vs API-key routes). */
-function aggregateByProvider(bucket) {
-  const byProvider = {}
-  for (const [modelKey, data] of Object.entries(bucket.byModel ?? {})) {
-    const separator = modelKey.indexOf(':')
-    const provider = separator >= 0 ? modelKey.slice(0, separator) : modelKey
-    const aggregate = byProvider[provider] ?? { costCny: 0, calls: 0, cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0 }
-    aggregate.costCny += toFiniteNumber(data && data.costCny)
-    aggregate.calls += toFiniteNumber(data && data.calls)
-    aggregate.cacheHit += toFiniteNumber(data && data.cacheHit)
-    aggregate.cacheMiss += toFiniteNumber(data && data.cacheMiss)
-    aggregate.cacheWrite += toFiniteNumber(data && data.cacheWrite)
-    aggregate.output += toFiniteNumber(data && data.output)
-    byProvider[provider] = aggregate
+/** Add one stored token/call bucket into another. */
+function addTier(target, source) {
+  for (const field of TOKEN_FIELDS) target[field] += toFiniteNumber(source[field])
+  target.calls += toFiniteNumber(source.calls)
+}
+
+/** Sum every stored bucket of one model entry (new tiers + a migrated v1 day). */
+function entryTotals(entry) {
+  const totals = { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, calls: 0 }
+  for (const tier of ['peak', 'off']) {
+    const bucket = entry[tier]
+    if (bucket !== null && typeof bucket === 'object') addTier(totals, bucket)
   }
-  return byProvider
+  if (entry.legacy !== null && typeof entry.legacy === 'object') addTier(totals, entry.legacy)
+  return totals
+}
+
+/** Split a `${provider}:${model}` ledger key (model ids never contain ':'). */
+function splitModelKey(modelKey) {
+  const separator = modelKey.indexOf(':')
+  return separator >= 0
+    ? { provider: modelKey.slice(0, separator), model: modelKey.slice(separator + 1) }
+    : { provider: modelKey, model: '' }
+}
+
+/** Price one model entry (CNY) from its stored token buckets. */
+function modelEntryCost(modelKey, entry) {
+  const family = priceFamily(splitModelKey(modelKey).model)
+  let cost = entry.legacy !== null && typeof entry.legacy === 'object'
+    ? toFiniteNumber(entry.legacy.costCny)
+    : 0
+  if (family !== null) {
+    const rates = DEEPSEEK_PRICING[family]
+    for (const tier of ['peak', 'off']) {
+      const tokens = entry[tier]
+      if (tokens === null || typeof tokens !== 'object') continue
+      const rate = rates[tier === 'peak' ? 'peak' : 'idle']
+      cost += (
+        toFiniteNumber(tokens.cacheHit) * rate.cacheHit
+        + (toFiniteNumber(tokens.cacheMiss) + toFiniteNumber(tokens.cacheWrite)) * rate.cacheMiss
+        + toFiniteNumber(tokens.output) * rate.output
+      ) / 1_000_000
+    }
+  }
+  return cost
+}
+
+/** Empty per-provider aggregate used by day summaries. */
+function emptyProviderBucket() {
+  return {
+    cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0,
+    calls: 0, costCny: 0, searchCalls: 0,
+  }
+}
+
+/** Fold one stored day (token buckets + search requests) into the API shape. */
+function summarizeDay(day) {
+  const totals = { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, calls: 0, searchCalls: 0 }
+  let costCny = 0
+  const byModel = {}
+  const byProvider = {}
+  const providerBucket = (provider) => {
+    if (byProvider[provider] === undefined) byProvider[provider] = emptyProviderBucket()
+    return byProvider[provider]
+  }
+  const modelEntries = day !== null && typeof day === 'object' && day.byModel !== null && typeof day.byModel === 'object'
+    ? Object.entries(day.byModel)
+    : []
+  for (const [modelKey, entry] of modelEntries) {
+    if (entry === null || typeof entry !== 'object') continue
+    const tokens = entryTotals(entry)
+    for (const field of TOKEN_FIELDS) totals[field] += tokens[field]
+    totals.calls += tokens.calls
+    const cost = modelEntryCost(modelKey, entry)
+    costCny += cost
+    byModel[modelKey] = { costCny: cost, calls: tokens.calls }
+    const bucket = providerBucket(splitModelKey(modelKey).provider)
+    for (const field of TOKEN_FIELDS) bucket[field] += tokens[field]
+    bucket.calls += tokens.calls
+    bucket.costCny += cost
+  }
+  const search = day !== null && typeof day === 'object' && day.search !== null && typeof day.search === 'object'
+    ? day.search
+    : {}
+  for (const [provider, record] of Object.entries(search)) {
+    if (record === null || typeof record !== 'object') continue
+    const requests = toFiniteNumber(record.requests)
+    const cost = requests * SEARCH_REQUEST_PRICE
+    totals.searchCalls += requests
+    costCny += cost
+    const bucket = providerBucket(provider)
+    bucket.searchCalls += requests
+    bucket.costCny += cost
+  }
+  return { ...totals, costCny, byModel, byProvider }
+}
+
+/** Convert a v1 ledger (pre-priced CNY days) into v2 token buckets. */
+function migrateLegacyDays(days) {
+  const migrated = {}
+  for (const [date, day] of Object.entries(days ?? {})) {
+    if (day === null || typeof day !== 'object') continue
+    const byModel = {}
+    const entries = day.byModel !== null && typeof day.byModel === 'object' ? Object.entries(day.byModel) : []
+    for (const [modelKey, entry] of entries) {
+      if (entry === null || typeof entry !== 'object') continue
+      byModel[modelKey] = {
+        peak: emptyTier(),
+        off: emptyTier(),
+        legacy: {
+          cacheHit: toFiniteNumber(entry.cacheHit),
+          cacheMiss: toFiniteNumber(entry.cacheMiss),
+          cacheWrite: toFiniteNumber(entry.cacheWrite),
+          output: toFiniteNumber(entry.output),
+          calls: toFiniteNumber(entry.calls),
+          costCny: toFiniteNumber(entry.costCny),
+        },
+      }
+    }
+    migrated[date] = { byModel, search: {} }
+  }
+  return migrated
 }
 
 /**
  * In-memory daily ledger with debounced persistence. Survives restarts; a
  * corrupt file starts fresh rather than failing the plugin.
+ *
+ * v2 keeps token buckets per peak/idle tier, so the amount is always
+ * recomputable: a future price-card change or an audit never has to re-charge
+ * the stored data. A v1 file is migrated on load; its already-priced day
+ * totals survive as `legacy`.
  */
-function createSpendLedger() {
+function createSpendLedger(options = {}) {
+  const retainDays = Number.isFinite(options.retainDays)
+    ? Math.max(1, Math.floor(options.retainDays))
+    : DEFAULT_RETAIN_DAYS
   const state = { days: {}, debugOnce: null }
   const { dir, file } = ledgerPaths()
   let writeTimer = null
   let dirty = false
 
-  try {
-    const raw = fs.readFileSync(file, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (parsed !== null && typeof parsed === 'object' && parsed.days !== null && typeof parsed.days === 'object') {
-      state.days = parsed.days
+  load()
+
+  function load() {
+    try {
+      const raw = fs.readFileSync(file, 'utf8')
+      const parsed = JSON.parse(raw)
+      if (parsed === null || typeof parsed !== 'object' || parsed.days === null || typeof parsed.days !== 'object') return
+      state.days = parsed.version === LEDGER_VERSION ? parsed.days : migrateLegacyDays(parsed.days)
+      prune()
+    } catch {
+      /* first run or unreadable ledger — start clean */
     }
-  } catch {
-    /* first run or unreadable ledger — start clean */
+  }
+
+  /** Drop days older than the retention window (default ~13 months). */
+  function prune() {
+    const cutoff = localDateKey(new Date(Date.now() - (retainDays - 1) * 86400000))
+    for (const key of Object.keys(state.days)) if (key < cutoff) delete state.days[key]
   }
 
   function flush() {
     if (!dirty) return
     dirty = false
+    prune()
     try {
       fs.mkdirSync(dir, { recursive: true })
       const tmp = `${file}.tmp`
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, days: state.days }))
+      fs.writeFileSync(tmp, JSON.stringify({ version: LEDGER_VERSION, days: state.days }))
       fs.renameSync(tmp, file)
     } catch {
       /* best-effort persistence */
@@ -606,55 +743,48 @@ function createSpendLedger() {
     writeTimer = setTimeout(() => {
       writeTimer = null
       flush()
-    }, 2000)
+    }, FLUSH_DELAY_MS)
     if (typeof writeTimer.unref === 'function') writeTimer.unref()
   }
 
   function dayBucket(date) {
     const key = localDateKey(date)
     if (state.days[key] === undefined) {
-      state.days[key] = { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, calls: 0, costCny: 0, byModel: {} }
+      state.days[key] = { byModel: {}, search: {} }
     }
     return { key, bucket: state.days[key] }
   }
 
   return {
-    /** Record one completed usage block; returns the priced contribution. */
+    /** Record one completed usage block into its peak/idle token bucket. */
     record(provider, model, usage, at) {
       const family = priceFamily(model)
       if (family === null) return null
-      const peak = isPeakNow(at)
-      const cost = priceUsage(usage, family, peak)
-      const { key, bucket } = dayBucket(at)
-      bucket.cacheHit += usage.cacheHit
-      bucket.cacheMiss += usage.cacheMiss
-      bucket.cacheWrite += usage.cacheWrite
-      bucket.output += usage.output
-      bucket.calls += 1
-      bucket.costCny += cost
-      const modelKey = `${provider}:${model}`
-      const perModel = bucket.byModel[modelKey] ?? { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, calls: 0, costCny: 0 }
-      perModel.cacheHit += usage.cacheHit
-      perModel.cacheMiss += usage.cacheMiss
-      perModel.cacheWrite += usage.cacheWrite
-      perModel.output += usage.output
-      perModel.calls += 1
-      perModel.costCny += cost
-      bucket.byModel[modelKey] = perModel
+      const { bucket } = dayBucket(at)
+      const key = `${provider}:${model}`
+      const entry = bucket.byModel[key] ?? { peak: emptyTier(), off: emptyTier() }
+      const tier = isPeakNow(at) ? 'peak' : 'off'
+      const target = entry[tier]
+      for (const field of TOKEN_FIELDS) target[field] += toFiniteNumber(usage[field])
+      target.calls += 1
+      bucket.byModel[key] = entry
       scheduleFlush()
-      return { costCny: cost, peak, key }
+      return { key, tier }
+    },
+    /** Record one DeepSeek search request (billed per successful request). */
+    recordSearch(provider, at) {
+      if (typeof provider !== 'string' || provider === '') return
+      const { bucket } = dayBucket(at)
+      if (bucket.search === undefined) bucket.search = {}
+      const record = bucket.search[provider] ?? { requests: 0 }
+      record.requests += 1
+      bucket.search[provider] = record
+      scheduleFlush()
     },
     /** Today's metered total, split per provider, for the settings page. */
     today(now = new Date()) {
       const key = localDateKey(now)
-      const bucket = state.days[key]
-      if (bucket === undefined) {
-        return { date: key, costCny: 0, calls: 0, cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0, byModel: {}, byProvider: {} }
-      }
-      /* The account route and the API-key routes are different cost centres:
-       * split the day so each row can show its own figure. */
-      const byProvider = aggregateByProvider(bucket)
-      return { date: key, ...bucket, byProvider }
+      return { date: key, ...summarizeDay(state.days[key]) }
     },
     /** Last N days, split per provider and per model, for the cards' charts. */
     recent(days = 7, now = new Date()) {
@@ -662,19 +792,7 @@ function createSpendLedger() {
       for (let offset = days - 1; offset >= 0; offset -= 1) {
         const day = new Date(now.getTime() - offset * 86400000)
         const key = localDateKey(day)
-        const bucket = state.days[key]
-        out.push({
-          date: key,
-          costCny: bucket === undefined ? 0 : toFiniteNumber(bucket.costCny),
-          calls: bucket === undefined ? 0 : toFiniteNumber(bucket.calls),
-          byProvider: bucket === undefined ? {} : aggregateByProvider(bucket),
-          byModel: bucket !== undefined && bucket.byModel !== null && typeof bucket.byModel === 'object'
-            ? Object.fromEntries(Object.entries(bucket.byModel).map(([modelKey, data]) => [modelKey, {
-              costCny: toFiniteNumber(data && data.costCny),
-              calls: toFiniteNumber(data && data.calls),
-            }]))
-            : {},
-        })
+        out.push({ date: key, ...summarizeDay(state.days[key]) })
       }
       return out
     },
@@ -684,12 +802,13 @@ function createSpendLedger() {
       for (let offset = days - 1; offset >= 0; offset -= 1) {
         const day = new Date(now.getTime() - offset * 86400000)
         const key = localDateKey(day)
-        const bucket = state.days[key]
+        const summary = summarizeDay(state.days[key])
         out.push({
           date: key,
-          costCny: bucket === undefined ? 0 : toFiniteNumber(bucket.costCny),
-          calls: bucket === undefined ? 0 : toFiniteNumber(bucket.calls),
-          byProvider: bucket === undefined ? {} : aggregateByProvider(bucket),
+          costCny: summary.costCny,
+          calls: summary.calls,
+          searchCalls: summary.searchCalls,
+          byProvider: summary.byProvider,
         })
       }
       return out
@@ -886,8 +1005,9 @@ function apply(ctx, config) {
   const glmBase = config.glmBaseURL
 
   /* Local DeepSeek spend meter: the balance API has no usage history, so we
-   * price the usage blocks the stream reports and keep a small daily ledger. */
-  const spendLedger = createSpendLedger()
+   * store the usage blocks the stream reports (plus per-request search fees)
+   * in a small daily ledger and price them on read. */
+  const spendLedger = createSpendLedger({ retainDays: config.retainDays })
 
   const disposeMeter = ctx.on('llm/stream', (options, next) => {
     const provider = options !== null && typeof options === 'object' ? options.provider : undefined
@@ -908,6 +1028,24 @@ function apply(ctx, config) {
         yield chunk
       }
     })()
+  })
+
+  /* DeepSeek web search is a provider-private Messages call (outside the `llm`
+   * seam), so it never reports token usage here. The session records one
+   * `web/deepseek-search-llm-request` event per search request; count those and
+   * charge the per-request Search fee. The search model's own tokens remain
+   * unmetered — the Harness never sees them. */
+  const disposeSearchMeter = ctx.on('session/event', (session, event) => {
+    try {
+      if (event === null || typeof event !== 'object' || event.type !== 'web/deepseek-search-llm-request') return
+      const route = typeof session?.requestContext === 'function' ? session.requestContext() : undefined
+      const provider = route !== null && typeof route === 'object' && route.provider === 'deepseek-account'
+        ? 'deepseek-account'
+        : 'deepseek-official'
+      spendLedger.recordSearch(provider, new Date(typeof event.time === 'number' ? event.time : Date.now()))
+    } catch {
+      /* metering must never disturb the session */
+    }
   })
 
   const disposeSummary = ctx.effect(() => ctx.webServer.register({
@@ -979,13 +1117,15 @@ function apply(ctx, config) {
         const spendFor = (providerIds) => {
           let costCny = 0
           let calls = 0
+          let searchCalls = 0
           for (const providerId of providerIds) {
             const bucket = byProvider[providerId]
             if (bucket === undefined) continue
             costCny += toFiniteNumber(bucket.costCny)
             calls += toFiniteNumber(bucket.calls)
+            searchCalls += toFiniteNumber(bucket.searchCalls)
           }
-          return calls > 0 || costCny > 0 ? { costCny, calls } : null
+          return calls > 0 || costCny > 0 || searchCalls > 0 ? { costCny, calls, searchCalls } : null
         }
 
         writeJson(res, 200, {
@@ -1150,6 +1290,7 @@ function apply(ctx, config) {
       /* best-effort persistence on unload */
     }
     disposeMeter()
+    disposeSearchMeter()
     disposeSelection()
     disposeKeys()
     disposeVisibility()

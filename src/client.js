@@ -73,9 +73,10 @@ window.__ModuleLoader__.load({
       'glm.resetIn': '{time} 后重置',
       'glm.noPlan': '暂无有效 Coding Plan',
       'spend.title': 'DeepSeek 今日消耗（本地记账）',
-      'spend.hint': 'DeepSeek 官方没有用量接口，这里按 DSH 实际调用上报的 token 用量 × 官方价目表在本地估算，只统计 DSH 自身的调用，不包含其它客户端。',
+      'spend.hint': 'DeepSeek 官方没有用量接口，这里按 DSH 实际调用上报的 token 用量 × 官方价目表在本地估算，只统计 DSH 自身的调用，不包含其它客户端；网页搜索按请求次数计费，其模型 token 无法观测、不计入。',
       'spend.cost': '¥{amount}',
       'spend.calls': '{calls} 次调用',
+      'spend.search': '搜索 {calls} 次',
       'spend.tokens': '输入 {input} · 输出 {output}',
       'spend.cache': '缓存命中 {hit}',
       'spend.recent': '近 7 天',
@@ -143,9 +144,10 @@ window.__ModuleLoader__.load({
       'glm.resetIn': 'resets in {time}',
       'glm.noPlan': 'No active Coding Plan',
       'spend.title': "DeepSeek today's spend (local meter)",
-      'spend.hint': 'DeepSeek exposes no usage API. This figure is estimated locally from the token usage DSH itself reports, priced against the official rate card; calls made by other clients on the same account are not included.',
+      'spend.hint': 'DeepSeek exposes no usage API. This figure is estimated locally from the token usage DSH itself reports, priced against the official rate card; calls made by other clients are not included. Web search is counted per request — its model tokens are not observable and stay unmetered.',
       'spend.cost': '¥{amount}',
       'spend.calls': '{calls} calls',
+      'spend.search': '{calls} searches',
       'spend.tokens': 'input {input} · output {output}',
       'spend.cache': 'cache hits {hit}',
       'spend.recent': 'Last 7 days',
@@ -510,11 +512,16 @@ window.__ModuleLoader__.load({
       const spendOf = (own) => {
         const cost = toNumberOrNull(own && own.costCny)
         const calls = toNumberOrNull(own && own.calls) ?? 0
+        const searchCalls = toNumberOrNull(own && own.searchCalls) ?? 0
         const amount = cost !== null && cost > 0 ? cost : 0
+        const label = `≈¥${amount.toFixed(2)}`
+        const callsLine = searchCalls > 0
+          ? `${t('spend.calls', { calls: formatTokens(calls) })} · ${t('spend.search', { calls: formatTokens(searchCalls) })}`
+          : t('spend.calls', { calls: formatTokens(calls) })
         return {
-          text: `≈¥${amount.toFixed(2)}`,
+          text: label,
           detail: [
-            `${t('spend.title')} ≈¥${amount.toFixed(2)} · ${t('spend.calls', { calls: formatTokens(calls) })}`,
+            `${t('spend.title')} ${label} · ${callsLine}`,
             t('spend.hint'),
           ],
         }
@@ -628,8 +635,9 @@ window.__ModuleLoader__.load({
     function spendSummaryOf(own) {
       const cost = toNumberOrNull(own && own.costCny)
       const calls = toNumberOrNull(own && own.calls) ?? 0
+      const searchCalls = toNumberOrNull(own && own.searchCalls) ?? 0
       const amount = cost !== null && cost > 0 ? cost : 0
-      return { text: `≈¥${amount.toFixed(2)}`, calls, amount }
+      return { text: `≈¥${amount.toFixed(2)}`, calls, searchCalls, amount }
     }
 
     /**
@@ -1203,9 +1211,11 @@ window.__ModuleLoader__.load({
     /** One source's day line: `≈today · N calls · status` plus wallet facts. */
     function SpendLine(props) {
       const t = props.t
+      const searchCalls = toNumberOrNull(props.spend && props.spend.searchCalls) ?? 0
       return h('div', { className: 'dauw-card-sub' },
         h('span', { className: 'dauw-spend' }, props.spend.text),
         h('span', null, t('spend.calls', { calls: formatTokens(props.spend.calls) })),
+        searchCalls > 0 ? h('span', null, t('spend.search', { calls: formatTokens(searchCalls) })) : null,
         props.status ? h('span', null, props.status) : null,
         props.children)
     }

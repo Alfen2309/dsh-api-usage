@@ -60,18 +60,20 @@ The GLM host defaults to `https://open.bigmodel.cn`; set `glmBaseURL` to `https:
 
 ### DeepSeek today's spend (local metering)
 
-DeepSeek exposes **no public usage API**, so the plugin listens to `llm/stream` on the Host, prices each usage block against the official CNY rate card, and accumulates per day:
+DeepSeek exposes **no public usage API**, so the plugin listens to `llm/stream` on the Host and records every usage block per day; web-search requests are billed per request and counted too. Amounts are computed from the official rate card at read time:
 
 ```
 usage chunk → { inputTokens (cache miss), cacheReadTokens (hit), outputTokens }
-            → priced with the official DeepSeek CNY table (peak / idle)
+            → accumulated into peak / idle token buckets (priced on read)
             → split by provider route (account vs each API key)
-            → persisted to $DSH_HOME/storages/api-usage/ledger.json
+            → persisted to $DSH_HOME/storages/api-usage/ledger.json (v2: token buckets)
 ```
 
 - Covers **DSH's own calls only**; consumption by other clients on the same account is not included
-- Built-in rate card: `deepseek-flash`, `deepseek-v4-pro` (peak = idle × 2; peak is Beijing Mon–Fri 09:00–12:00 and 14:00–18:00)
-- The account route and each API-key route are metered **separately**
+- Built-in rate cards for `deepseek-flash` and `deepseek-v4-pro` (peak = idle × 2; peak is Beijing Mon–Fri 09:00–12:00 and 14:00–18:00; Chinese public holidays are not modelled yet)
+- Web search: DSH searches through a DeepSeek Messages `web_search` server tool; the plugin counts `web/deepseek-search-llm-request` session events and estimates **CNY 5 / 1,000** requests. The search model's own tokens are not observable from the Harness and stay unmetered
+- The ledger stores only token buckets; amounts are computed on read, so new data follows an official price change automatically (already-priced data migrated from v1 keeps its value)
+- The last 400 days are kept by default (`retainDays`); the account route and each API-key route are metered **separately**
 
 ## Install
 
@@ -93,6 +95,7 @@ dsh plugin --profile desktop add "link:C:\MY\project\dsh-plugins\dsh-api-usage"
 | `glmBaseURL` | `https://open.bigmodel.cn` | GLM API base (use `https://api.z.ai` internationally) |
 | `pollSeconds` | `60` | refresh interval |
 | `lowBalance` | `20` | low-balance threshold |
+| `retainDays` | `400` | days of local ledger history kept (older days are pruned) |
 | `selectedSource` | `""` | badge subject id (browser-local wins) |
 | `hidden` | `[]` | sources excluded from badge aggregation |
 | `extraRefs` | `[]` | extra credential references |
@@ -120,6 +123,7 @@ npm run check        # syntax check
 - DSH credential references are not enumerable: the plugin infers them from provider configuration, the `llm` directory and well-known names; use "Add API key" or `extraRefs` for the rest
 - Providers pointing at the same `apiKeyEnv` are one key in DSH, so their balances match
 - DeepSeek today's spend is a local estimate covering DSH calls only
+- Metering starts when the plugin loads, so an install/restart day can read low; web search is estimated per request (its model tokens are unmetered); Chinese public holidays are not treated as off-peak
 - GLM Coding Plan is a subscription; the plugin shows quota utilisation instead of a balance
 - The DSH settings dialog cannot be opened programmatically by a plugin (no public API), so management uses the plugin's own dialog
 
