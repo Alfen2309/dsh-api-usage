@@ -1,6 +1,6 @@
 {
   "name": "dsh-api-usage",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "API balance & usage monitor for DeepSeek Harness: a composer badge plus a per-key manager showing DeepSeek balances/today's spend, GLM Coding Plan quotas, and 7-day/90-day charts.",
   "type": "module",
   "license": "MIT",
