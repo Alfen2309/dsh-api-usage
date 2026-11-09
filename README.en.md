@@ -31,13 +31,13 @@ One card per source, all with the same structure:
 
 ```
 ★  🔑 DeepSeek  ···xxxx              ¥9,999,999.00   ☆  ●
-   ≈¥9,999.99 · 888 calls · available · granted ¥0 · topped up ¥9,999,999.00
+   ≈¥9,999.99 · input 1,234,567 · output 89,012 · cache hits 234,567 · 888 calls · available · granted ¥0 · topped up ¥9,999,999.00
    [last 7 days bars]  [last 90 days calendar heatmap]
 ```
 
 - **Card header**: star (badge subject), source icon/avatar, name, masked key tail, balance, visibility switch
-- **Spend line**: today's spend, call count, availability, granted/topped-up balance
-- **Charts**: ECharts bar chart (7 days) + GitHub-style calendar heatmap (90 days, week × weekday with month labels)
+- **Spend line**: today's spend, today's token usage (input / output / cache hits, split along the billing components), call count, availability, granted/topped-up balance
+- **Charts**: ECharts dual-axis bar chart (7 days: CNY cost at 2 decimals + token usage, each on its own y-axis, with a legend) + GitHub-style calendar heatmap (90 days, week × weekday with month labels; toggle Cost/Tokens coloring, hover shows the day's CNY, tokens and call count)
 - **GLM cards**: progress bars for the 5-hour / weekly / MCP quotas (percentage, reset countdown) plus today's official spend (credits/tokens)
 - Each source can be toggled independently
 

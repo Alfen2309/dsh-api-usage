@@ -81,6 +81,8 @@ window.__ModuleLoader__.load({
       'spend.cache': '缓存命中 {hit}',
       'spend.recent': '近 7 天',
       'spend.calendar': '近 90 天',
+      'chart.cost': '金额',
+      'chart.tokens': 'Token',
       'spend.recentEmpty': '近 90 天没有消耗记录',
       'spend.empty': '今天还没有 DeepSeek 调用',
       'spend.footer': 'DS 今日消耗',
@@ -152,6 +154,8 @@ window.__ModuleLoader__.load({
       'spend.cache': 'cache hits {hit}',
       'spend.recent': 'Last 7 days',
       'spend.calendar': 'Last 90 days',
+      'chart.cost': 'Cost',
+      'chart.tokens': 'Tokens',
       'spend.recentEmpty': 'No spend in the last 90 days',
       'spend.empty': 'No DeepSeek calls today yet',
       'spend.footer': 'DS today',
@@ -298,6 +302,17 @@ window.__ModuleLoader__.load({
       '.dauw-spark-label{flex:none;color:var(--dsw-alias-label-tertiary,#999);font-size:11px}',
       '.dauw-chart{width:100%;height:100px}',
       '.dauw-calendar{width:100%;height:100px}',
+      /* shared 18px header row above each chart canvas — HTML legend on the
+       * bars pane, metric toggle on the calendar pane — so both canvases
+       * start at the same y and keep the same 100px height */
+      '.dauw-chart-head{flex:none;display:flex;align-items:center;gap:12px;height:18px}',
+      '.dauw-legend-item{display:inline-flex;align-items:center;gap:4px;color:var(--dsw-alias-label-secondary,#666);font-size:10px}',
+      '.dauw-legend-dot{width:8px;height:8px;border-radius:2px;flex:none}',
+      /* heatmap metric toggle (金额 | Token) */
+      '.dauw-heat-toggle{display:inline-flex;gap:2px;padding:1px;border-radius:6px;background:#f2f4f7;flex:none}',
+      '.dauw-heat-btn{height:16px;line-height:14px;padding:0 8px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary,#666);font-size:10px;font-family:inherit;cursor:pointer}',
+      '.dauw-heat-btn:hover{color:var(--dsw-alias-label-primary,#111)}',
+      '.dauw-heat-btn.dauw-active{background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#111);box-shadow:0 1px 2px rgba(0,0,0,.12)}',
       '.dauw-spark-empty{width:100%;padding:2px 0 4px;color:var(--dsw-alias-label-tertiary,#999);font-size:11px}',
       '.dauw-badge-toggle{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:none;border-radius:6px;background:transparent;color:var(--dsw-alias-label-tertiary,#999);cursor:pointer;transition:background 120ms ease,color 120ms ease}',
       '.dauw-badge-toggle:hover{background:var(--dsw-alias-bg-layer-2,#f0f0f0);color:var(--dsw-alias-label-primary,#111)}',
@@ -637,13 +652,28 @@ window.__ModuleLoader__.load({
       const calls = toNumberOrNull(own && own.calls) ?? 0
       const searchCalls = toNumberOrNull(own && own.searchCalls) ?? 0
       const amount = cost !== null && cost > 0 ? cost : 0
-      return { text: `≈¥${amount.toFixed(2)}`, calls, searchCalls, amount }
+      /* Token figures share the source's day scope: `input` (miss-rate slice),
+       * `cacheHit` and `output`. A missing host figure reads as zero so the
+       * spend line always shows the full field set, zero or not. */
+      const raw = own !== null && typeof own === 'object' ? own.tokens : null
+      const tokenField = (name) => (raw !== null && typeof raw === 'object' ? toNumberOrNull(raw[name]) ?? 0 : 0)
+      const tokens = { input: tokenField('input'), cacheHit: tokenField('cacheHit'), output: tokenField('output') }
+      return { text: `≈¥${amount.toFixed(2)}`, calls, searchCalls, amount, tokens }
     }
+
+    /* Shared chart palette: cost is blue, tokens green — the bar series, the
+     * heatmap ramp and the HTML legend/dots all read the same two colors. */
+    const COST_COLOR = '#5470c6'
+    const TOKEN_COLOR = '#91cc75'
 
     /**
      * Two full-width ECharts per source card: a 7-day bar trend on top and a
      * 90-day GitHub-style calendar heatmap below, both scoped to this source's
-     * provider or the combined total.
+     * provider or the combined total. The bar trend is dual-axis — CNY cost on
+     * the left axis, tokens on the right — because the two magnitudes differ
+     * by orders of magnitude and a shared axis would flatten the cost bars.
+     * Each pane leads with an 18px header row (HTML legend / metric toggle) so
+     * both canvases start at the same y and share the same 100px height.
      */
     function MiniBars(props) {
       const t = props.t
@@ -651,81 +681,169 @@ window.__ModuleLoader__.load({
       const calendarDays = Array.isArray(props.calendar) ? props.calendar : []
       const barRef = React.useRef(null)
       const calRef = React.useRef(null)
+      /* Heatmap color metric: 'cost' | 'tokens'. The calendar encodes one
+       * dimension only, so the two metrics share it through a toggle while
+       * the tooltip always shows both. */
+      const [heatMetric, setHeatMetric] = React.useState('cost')
 
+      const scopedBucket = (day) => (props.providerId !== undefined && day.byProvider ? day.byProvider[props.providerId] : day)
       const scopedCost = (day) => {
-        const bucket = props.providerId !== undefined && day.byProvider ? day.byProvider[props.providerId] : day
+        const bucket = scopedBucket(day)
         return toNumberOrNull(bucket && bucket.costCny) ?? 0
       }
+      /* All billed tokens of the day: cache hits + misses + writes + output. */
+      const scopedTokens = (day) => {
+        const bucket = scopedBucket(day)
+        return (toNumberOrNull(bucket && bucket.cacheHit) ?? 0)
+          + (toNumberOrNull(bucket && bucket.cacheMiss) ?? 0)
+          + (toNumberOrNull(bucket && bucket.cacheWrite) ?? 0)
+          + (toNumberOrNull(bucket && bucket.output) ?? 0)
+      }
       const values = days.map(scopedCost)
+      const tokenValues = days.map(scopedTokens)
       const max = values.reduce((acc, value) => Math.max(acc, value), 0)
+      const tokenMax = tokenValues.reduce((acc, value) => Math.max(acc, value), 0)
       /* Charts always render, even for a source with no spend yet: the empty
        * track and blank calendar communicate "nothing recorded" better than a
        * missing chart. A zero max would divide by zero, so clamp it. */
       const yMax = max > 0 ? max : 1
+      const tokenYMax = tokenMax > 0 ? tokenMax : 1
 
       const calValues = calendarDays.map((day) => [day.date, scopedCost(day)])
       const calMax = calValues.reduce((acc, [, value]) => Math.max(acc, value), 0)
+      const calTokenValues = calendarDays.map((day) => [day.date, scopedTokens(day)])
+      const calTokenMax = calTokenValues.reduce((acc, [, value]) => Math.max(acc, value), 0)
       const calendarRange = calendarDays.length > 0
         ? [calendarDays[0].date, calendarDays[calendarDays.length - 1].date]
         : null
+      /* Per-date scoped facts for the calendar tooltip (both metrics). */
+      const calInfo = new Map(calendarDays.map((day) => {
+        const bucket = scopedBucket(day)
+        return [day.date, {
+          cost: toNumberOrNull(bucket && bucket.costCny) ?? 0,
+          tokens: scopedTokens(day),
+          input: (toNumberOrNull(bucket && bucket.cacheMiss) ?? 0) + (toNumberOrNull(bucket && bucket.cacheWrite) ?? 0),
+          cacheHit: toNumberOrNull(bucket && bucket.cacheHit) ?? 0,
+          output: toNumberOrNull(bucket && bucket.output) ?? 0,
+          calls: toNumberOrNull(bucket && bucket.calls) ?? 0,
+          searchCalls: toNumberOrNull(bucket && bucket.searchCalls) ?? 0,
+        }]
+      }))
 
-      const signature = `${values.map((value) => value.toFixed(4)).join(',')}|${calValues.map((row) => row.join(':')).join(',')}`
+      const signature = `${values.map((value) => value.toFixed(4)).join(',')}|${tokenValues.join(',')}|${calValues.map((row) => row.join(':')).join(',')}|${calTokenValues.map((row) => row.join(':')).join(',')}`
       const dates = days.map((day) => day.date.slice(5))
 
       React.useEffect(() => {
         const styles = getComputedStyle(document.documentElement)
         const font = styles.getPropertyValue('--dsw-font').trim() || 'sans-serif'
-        /* ECharts' own palette, not the DSH brand token: `--dsw-alias-brand-primary`
-         * is the near-black action color, which reads as a dark bar here. */
-        const accent = '#5470c6'
         const empty = '#ebedf0'
         const mutedText = '#9aa3ad'
         const charts = []
 
+        /* Shared tooltip fragments: colored dot rows under a bold date header,
+         * both charts formatted identically. 10px matches the header-row chrome. */
+        const tipDot = (color) => `<span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${color};margin-right:4px"></span>`
+        const tipHead = (text) => `<div style="font-weight:600;margin-bottom:1px">${text}</div>`
+        const tipRow = (color, label, value) => `<div style="line-height:1.5">${color === null ? '' : tipDot(color)}${label} <span style="font-weight:600;font-variant-numeric:tabular-nums">${value}</span></div>`
+        const tipSub = (text) => `<div style="color:#888;font-size:9px;padding-left:11px;line-height:1.5">${text}</div>`
+
         const barEl = barRef.current
         if (barEl !== null && days.length > 0) {
           const chart = echarts.init(barEl)
+          const barTrack = { color: '#f2f4f7', borderRadius: [3, 3, 0, 0] }
           chart.setOption({
             animation: false,
             textStyle: { fontFamily: font },
-            grid: { left: 4, right: 4, top: 8, bottom: 22 },
+            grid: { left: 4, right: 4, top: 6, bottom: 22 },
             xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, interval: 0 } },
-            yAxis: { type: 'value', max: yMax, show: false },
-            tooltip: { trigger: 'axis' },
-            color: [accent],
-            series: [{
-              type: 'bar',
-              data: values,
-              barMaxWidth: 18,
-              /* A faint track behind every bar keeps the chart from looking
-               * empty on days without spend. */
-              showBackground: true,
-              backgroundStyle: { color: '#f2f4f7', borderRadius: [3, 3, 0, 0] },
-              itemStyle: { borderRadius: [3, 3, 0, 0] },
-            }],
+            /* Dual axes keep both series readable: cost lives in tens of CNY,
+             * tokens in hundreds of millions — one shared scale would flatten
+             * one of the two into invisibility. */
+            yAxis: [
+              { type: 'value', max: yMax, show: false },
+              { type: 'value', max: tokenYMax, show: false },
+            ],
+            tooltip: {
+              trigger: 'axis',
+              confine: true,
+              padding: [4, 8],
+              textStyle: { fontSize: 10 },
+              formatter: (params) => {
+                const list = Array.isArray(params) ? params : [params]
+                const date = list.length > 0 && typeof list[0].axisValue === 'string' ? list[0].axisValue : ''
+                const parts = [tipHead(date)]
+                for (const item of list) {
+                  const value = toNumberOrNull(item.value) ?? 0
+                  parts.push(item.seriesIndex === 0
+                    ? tipRow(COST_COLOR, t('chart.cost'), t('spend.cost', { amount: value.toFixed(2) }))
+                    : tipRow(TOKEN_COLOR, t('chart.tokens'), formatTokens(value)))
+                }
+                return parts.join('')
+              },
+            },
+            color: [COST_COLOR, TOKEN_COLOR],
+            series: [
+              {
+                name: t('chart.cost'),
+                type: 'bar',
+                yAxisIndex: 0,
+                data: values,
+                barMaxWidth: 14,
+                /* A faint track behind every bar keeps the chart from looking
+                 * empty on days without spend. */
+                showBackground: true,
+                backgroundStyle: barTrack,
+                itemStyle: { borderRadius: [3, 3, 0, 0] },
+              },
+              {
+                name: t('chart.tokens'),
+                type: 'bar',
+                yAxisIndex: 1,
+                data: tokenValues,
+                barMaxWidth: 14,
+                showBackground: true,
+                backgroundStyle: barTrack,
+                itemStyle: { borderRadius: [3, 3, 0, 0] },
+              },
+            ],
           })
           charts.push(chart)
         }
 
         const calEl = calRef.current
         if (calEl !== null && calendarRange !== null) {
+          const heatData = heatMetric === 'tokens' ? calTokenValues : calValues
+          const heatMax = heatMetric === 'tokens' ? calTokenMax : calMax
+          /* Token cells share the token bars' green so both charts read the
+           * two metrics with the same color language. */
+          const heatAccent = heatMetric === 'tokens' ? TOKEN_COLOR : COST_COLOR
           const chart = echarts.init(calEl)
           chart.setOption({
             animation: false,
             textStyle: { fontFamily: font },
             tooltip: {
+              confine: true,
+              padding: [4, 8],
+              textStyle: { fontSize: 10 },
               formatter: (params) => {
                 const value = Array.isArray(params.value) ? params.value : []
                 const date = value[0]
-                const cost = Number(value[1] ?? 0)
-                return `${date} · ${t('spend.cost', { amount: cost.toFixed(2) })}`
+                const info = calInfo.get(date)
+                if (info === undefined) return tipHead(date)
+                return [
+                  tipHead(date),
+                  tipRow(COST_COLOR, t('chart.cost'), t('spend.cost', { amount: info.cost.toFixed(2) })),
+                  tipRow(TOKEN_COLOR, t('chart.tokens'), formatTokens(info.tokens)),
+                  tipSub(`${t('spend.tokens', { input: formatTokens(info.input), output: formatTokens(info.output) })} · ${t('spend.cache', { hit: formatTokens(info.cacheHit) })}`),
+                  tipSub(`${t('spend.calls', { calls: formatTokens(info.calls) })}${info.searchCalls > 0 ? ` · ${t('spend.search', { calls: formatTokens(info.searchCalls) })}` : ''}`),
+                ].join('')
               },
             },
             visualMap: {
               min: 0,
-              max: calMax > 0 ? calMax : 1,
+              max: heatMax > 0 ? heatMax : 1,
               show: false,
-              inRange: { color: [empty, accent] },
+              inRange: { color: [empty, heatAccent] },
             },
             calendar: {
               range: calendarRange,
@@ -752,9 +870,9 @@ window.__ModuleLoader__.load({
             series: [{
               type: 'heatmap',
               coordinateSystem: 'calendar',
-              data: calValues,
+              data: heatData,
               itemStyle: { borderRadius: 2 },
-              emphasis: { itemStyle: { borderColor: accent, borderWidth: 1 } },
+              emphasis: { itemStyle: { borderColor: heatAccent, borderWidth: 1 } },
             }],
           })
           charts.push(chart)
@@ -774,14 +892,33 @@ window.__ModuleLoader__.load({
           if (observer !== null) observer.disconnect()
           for (const chart of charts) chart.dispose()
         }
-      }, [signature, max, calMax])
+      }, [signature, max, tokenMax, calMax, calTokenMax, heatMetric])
 
       if (days.length === 0 && calendarDays.length === 0) return null
 
       return h('div', { className: 'dauw-charts' },
         h('div', { className: 'dauw-chart-pane' },
+          h('div', { className: 'dauw-chart-head' },
+            h('span', { className: 'dauw-legend-item' },
+              h('span', { className: 'dauw-legend-dot', style: { background: COST_COLOR } }),
+              t('chart.cost')),
+            h('span', { className: 'dauw-legend-item' },
+              h('span', { className: 'dauw-legend-dot', style: { background: TOKEN_COLOR } }),
+              t('chart.tokens'))),
           h('div', { ref: barRef, className: 'dauw-chart' })),
         h('div', { className: 'dauw-chart-pane' },
+          h('div', { className: 'dauw-chart-head' },
+            h('div', { className: 'dauw-heat-toggle', role: 'group', 'aria-label': t('spend.calendar') },
+              h('button', {
+                type: 'button',
+                className: 'dauw-heat-btn' + (heatMetric === 'cost' ? ' dauw-active' : ''),
+                onClick: () => setHeatMetric('cost'),
+              }, t('chart.cost')),
+              h('button', {
+                type: 'button',
+                className: 'dauw-heat-btn' + (heatMetric === 'tokens' ? ' dauw-active' : ''),
+                onClick: () => setHeatMetric('tokens'),
+              }, t('chart.tokens')))),
           h('div', { ref: calRef, className: 'dauw-calendar' })))
     }
 
@@ -1208,12 +1345,21 @@ window.__ModuleLoader__.load({
         props.footer)
     }
 
-    /** One source's day line: `≈today · N calls · status` plus wallet facts. */
+    /**
+     * One source's day line: `≈today · tokens · N calls · status` + wallet
+     * facts. Token spans render unconditionally — zero usage still shows the
+     * full `输入 0 · 输出 0 · 缓存命中 0` field set.
+     */
     function SpendLine(props) {
       const t = props.t
       const searchCalls = toNumberOrNull(props.spend && props.spend.searchCalls) ?? 0
+      const tokens = props.spend !== null && typeof props.spend === 'object' && props.spend.tokens !== null && typeof props.spend.tokens === 'object'
+        ? props.spend.tokens
+        : { input: 0, cacheHit: 0, output: 0 }
       return h('div', { className: 'dauw-card-sub' },
         h('span', { className: 'dauw-spend' }, props.spend.text),
+        h('span', null, t('spend.tokens', { input: formatTokens(tokens.input), output: formatTokens(tokens.output) })),
+        h('span', null, t('spend.cache', { hit: formatTokens(tokens.cacheHit) })),
         h('span', null, t('spend.calls', { calls: formatTokens(props.spend.calls) })),
         searchCalls > 0 ? h('span', null, t('spend.search', { calls: formatTokens(searchCalls) })) : null,
         props.status ? h('span', null, props.status) : null,

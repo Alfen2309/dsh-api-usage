@@ -1118,14 +1118,30 @@ function apply(ctx, config) {
           let costCny = 0
           let calls = 0
           let searchCalls = 0
+          const tokens = { cacheHit: 0, cacheMiss: 0, cacheWrite: 0, output: 0 }
           for (const providerId of providerIds) {
             const bucket = byProvider[providerId]
             if (bucket === undefined) continue
             costCny += toFiniteNumber(bucket.costCny)
             calls += toFiniteNumber(bucket.calls)
             searchCalls += toFiniteNumber(bucket.searchCalls)
+            for (const field of TOKEN_FIELDS) tokens[field] += toFiniteNumber(bucket[field])
           }
-          return calls > 0 || costCny > 0 || searchCalls > 0 ? { costCny, calls, searchCalls } : null
+          return calls > 0 || costCny > 0 || searchCalls > 0
+            ? {
+                costCny,
+                calls,
+                searchCalls,
+                /* Token split mirrors the price components: `input` is the
+                 * miss-rate slice (uncached prompt + cache writes), `cacheHit`
+                 * the hit-rate slice, `output` the completion tokens. */
+                tokens: {
+                  input: tokens.cacheMiss + tokens.cacheWrite,
+                  cacheHit: tokens.cacheHit,
+                  output: tokens.output,
+                },
+              }
+            : null
         }
 
         writeJson(res, 200, {
