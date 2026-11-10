@@ -77,7 +77,12 @@ window.__ModuleLoader__.load({
       'codex.unavailable': '未找到 Codex CLI；可在插件配置中指定 codexCommand',
       'codex.queryFailed': '暂时无法查询 Codex 用量（{code}）',
       'codex.used': '{percent}% 已用',
+      'codex.remaining': '剩余 {percent}%',
+      'group.codex': 'Codex',
+      'group.glm': 'GLM Coding Plan',
+      'group.deepseek': 'DeepSeek',
       'codex.windowUsed': '{window} · 已用',
+      'codex.windowLeft': '{window} · 剩余',
       'codex.primary': '主要窗口',
       'codex.secondary': '次要窗口',
       'codex.window5h': '5 小时窗口',
@@ -165,7 +170,12 @@ window.__ModuleLoader__.load({
       'codex.unavailable': 'Codex CLI not found; set codexCommand in plugin settings',
       'codex.queryFailed': 'Codex usage temporarily unavailable ({code})',
       'codex.used': '{percent}% used',
+      'codex.remaining': '{percent}% left',
+      'group.codex': 'Codex',
+      'group.glm': 'GLM Coding Plan',
+      'group.deepseek': 'DeepSeek',
       'codex.windowUsed': '{window} · used',
+      'codex.windowLeft': '{window} · left',
       'codex.primary': 'Primary window',
       'codex.secondary': 'Secondary window',
       'codex.window5h': '5-hour window',
@@ -231,6 +241,7 @@ window.__ModuleLoader__.load({
       '.dauw-panel{min-width:280px;max-width:360px;max-height:min(64vh,420px);overflow-y:auto;box-sizing:border-box;background:var(--dsw-alias-bg-overlay,#fff);border:0.5px solid var(--dsw-alias-border-l2,#ccc);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.22);padding:8px;z-index:400;font-family:var(--dsw-font,inherit);font-size:13px;color:var(--dsw-alias-label-primary,#111);animation:dauw-fade-up 160ms ease-out;transform-origin:bottom left}',
       '@keyframes dauw-fade-up{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}',
       '.dauw-panel-head{flex:none;padding:6px 10px 8px;color:var(--dsw-alias-label-tertiary,#999);font-size:12px}',
+      '.dauw-panel-group{flex:none;padding:7px 10px 3px;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;letter-spacing:.02em}',
       '.dauw-panel-empty{padding:10px;color:var(--dsw-alias-label-secondary,#666)}',
       '.dauw-panel-row{display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;border:none;background:transparent;border-radius:9px;padding:8px 10px;cursor:pointer;font-family:inherit;font-size:13px;color:inherit;text-align:left}',
       '.dauw-panel-row:hover{background:var(--dsw-alias-bg-layer-2,#f0f0f0)}',
@@ -797,12 +808,12 @@ window.__ModuleLoader__.load({
           kind: 'codex',
           icon: 'chart',
           name: codex.name || t('codex.title'),
-          value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : '—',
+          value: pct !== null ? t('codex.remaining', { percent: String(Math.max(0, Math.round(100 - pct))) }) : '—',
           tone: !codex.ok ? 'dauw-bad' : pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
           detail: [
             codex.data && codex.data.planType ? t('codex.plan', { plan: codex.data.planType }) : (codex.name || t('codex.title')),
-            pct !== null ? `${codexWindowLabel(primary, 'primary', t)} · ${t('codex.used', { percent: String(Math.round(pct)) })}` : null,
-            secondaryPct !== null ? `${codexWindowLabel(secondary, 'secondary', t)} · ${t('codex.used', { percent: String(Math.round(secondaryPct)) })}` : null,
+            pct !== null ? `${codexWindowLabel(primary, 'primary', t)} · ${t('codex.remaining', { percent: String(Math.max(0, Math.round(100 - pct))) })}` : null,
+            secondaryPct !== null ? `${codexWindowLabel(secondary, 'secondary', t)} · ${t('codex.remaining', { percent: String(Math.max(0, Math.round(100 - secondaryPct))) })}` : null,
             codex.ok ? t('codex.hint') : t('codex.queryFailed', { code: codex.error ?? '?' }),
           ].filter((line) => line !== null),
         })
@@ -1226,12 +1237,47 @@ window.__ModuleLoader__.load({
           kind: 'account',
           name: (summary.account.profile && (summary.account.profile.name || summary.account.profile.contact)) || 'DeepSeek',
           spend: summary.account.spend ?? null,
+          group: 'deepseek',
         })
       }
-      for (const entry of summary.deepseek || []) list.push({ id: entry.id, kind: 'deepseek', name: entry.label, entry })
-      for (const entry of summary.glm || []) list.push({ id: entry.id, kind: 'glm', name: entry.label, entry })
-      for (const entry of codexSources(summary)) list.push({ id: entry.id, kind: 'codex', name: entry.name || 'Codex', entry })
-      return list
+      const deepseek = (summary.deepseek || []).map((entry) => ({ id: entry.id, kind: 'deepseek', name: entry.label, entry, group: 'deepseek' }))
+      const glm = (summary.glm || []).map((entry) => ({ id: entry.id, kind: 'glm', name: entry.label, entry, group: 'glm' }))
+      const codex = codexSources(summary).map((entry) => ({ id: entry.id, kind: 'codex', name: entry.name || 'Codex', entry, group: 'codex' }))
+      /* Codex accounts are grouped last so the panel reads DeepSeek → GLM → Codex. */
+      return [...list, ...deepseek, ...glm, ...codex]
+    }
+
+    /**
+     * Panel children: one labelled group per vendor, so several Codex accounts
+     * read as a Codex block instead of as unrelated rows.
+     */
+    function panelRows(summary, source, t, pick) {
+      const list = badgeSources(summary)
+      if (list.length === 0) return [h('div', { key: 'empty', className: 'dauw-panel-empty' }, t('sources.empty'))]
+      const children = []
+      let group = ''
+      const labels = { deepseek: t('group.deepseek'), glm: t('group.glm'), codex: t('group.codex') }
+      for (const candidate of list) {
+        const name = candidate.group || 'deepseek'
+        if (name !== group) {
+          group = name
+          children.push(h('div', { key: `group:${name}`, className: 'dauw-panel-group' }, labels[name] ?? name))
+        }
+        const active = source !== null && candidate.id === source.id
+        children.push(h('button', {
+          key: candidate.id,
+          type: 'button',
+          role: 'menuitemradio',
+          'aria-checked': active ? 'true' : 'false',
+          className: 'dauw-panel-row' + (active ? ' dauw-panel-row-active' : ''),
+          onClick: () => pick(candidate.id),
+        },
+          h('span', { className: 'dauw-panel-radio' }, active ? h('span', { className: 'dauw-panel-radio-dot' }) : null),
+          h('span', { className: 'dauw-panel-icon' }, ROW_ICONS[candidate.kind === 'account' ? 'account' : 'key'] ?? CHART_ICON),
+          h('span', { className: 'dauw-panel-name' }, candidate.name),
+          h('span', { className: 'dauw-panel-value' }, badgeText(summary, candidate, t))))
+      }
+      return children
     }
 
     /** Badge subject: the local choice, the Host choice, else the account. */
@@ -1253,7 +1299,7 @@ window.__ModuleLoader__.load({
       if (source.kind === 'codex') {
         const window = source.entry.ok && source.entry.data ? source.entry.data.primary : null
         const pct = toNumberOrNull(window && window.usedPercent)
-        return pct === null ? '—' : t('codex.used', { percent: String(Math.round(pct)) })
+        return pct === null ? '—' : t('codex.remaining', { percent: String(Math.max(0, Math.round(100 - pct))) })
       }
       if (source.kind === 'glm') {
         const session = source.entry.ok && source.entry.data && source.entry.data.windows ? source.entry.data.windows.session : null
@@ -1387,26 +1433,7 @@ window.__ModuleLoader__.load({
           onMouseLeave: scheduleClose,
         },
           h('div', { className: 'dauw-panel-head' }, t('badge.title')),
-          badgeSources(summary).length === 0
-            ? h('div', { className: 'dauw-panel-empty' }, t('sources.empty'))
-            : badgeSources(summary).map((candidate) => {
-                const active = source !== null && candidate.id === source.id
-                return h('button', {
-                  key: candidate.id,
-                  type: 'button',
-                  role: 'menuitemradio',
-                  'aria-checked': active ? 'true' : 'false',
-                  className: 'dauw-panel-row' + (active ? ' dauw-panel-row-active' : ''),
-                  onClick: () => {
-                    setPanel(null)
-                    writeLocalSelection(candidate.id)
-                  },
-                },
-                  h('span', { className: 'dauw-panel-radio' }, active ? h('span', { className: 'dauw-panel-radio-dot' }) : null),
-                  h('span', { className: 'dauw-panel-icon' }, ROW_ICONS[candidate.kind === 'account' ? 'account' : 'key'] ?? CHART_ICON),
-                  h('span', { className: 'dauw-panel-name' }, candidate.name),
-                  h('span', { className: 'dauw-panel-value' }, badgeText(summary, candidate, t)))
-              }),
+          ...panelRows(summary, source, t, (id) => { setPanel(null); writeLocalSelection(id) }),
           h('div', { className: 'dauw-panel-foot' },
             h('span', { className: 'dauw-panel-hint-text' }, t('badge.hint')),
             h('button', {
@@ -1459,7 +1486,10 @@ window.__ModuleLoader__.load({
       const used = toNumberOrNull(window.used)
       const total = toNumberOrNull(window.total)
       const hasCounts = used !== null && total !== null && total > 0
-      const tone = pct !== null && pct >= 95 ? ' dauw-bad' : pct !== null && pct >= 80 ? ' dauw-warn' : ''
+      /* Codex windows render the *remaining* share in the bar, so the warning
+       * colour must follow the used share instead. */
+      const tonePct = props.tonePct === undefined ? pct : toNumberOrNull(props.tonePct)
+      const tone = tonePct !== null && tonePct >= 95 ? ' dauw-bad' : tonePct !== null && tonePct >= 80 ? ' dauw-warn' : ''
       return h('div', { className: 'dauw-bar-row' },
         h('div', { className: 'dauw-bar-label' },
           h('span', { className: 'dauw-bar-title' }, props.label),
@@ -1718,16 +1748,19 @@ window.__ModuleLoader__.load({
       const data = codex.ok ? codex.data : null
       const primary = data && data.primary
       const pct = toNumberOrNull(primary && primary.usedPercent)
+      /* The bar fills with what is left; the warning tone still follows the
+       * used share, so a nearly exhausted window turns amber/red. */
       const windowRow = (window, role) => window
         ? h(WindowRow, {
             t,
             window: {
-              percentage: window.usedPercent,
+              percentage: Math.max(0, 100 - window.usedPercent),
               nextResetTime: window.resetsAt === null ? null : window.resetsAt * 1000,
               used: null,
               total: null,
             },
-            label: t('codex.windowUsed', { window: codexWindowLabel(window, role, t) }),
+            tonePct: window.usedPercent,
+            label: t('codex.windowLeft', { window: codexWindowLabel(window, role, t) }),
             unit: 'codex.used',
           })
         : null
@@ -1735,7 +1768,7 @@ window.__ModuleLoader__.load({
         t,
         icon: CHART_ICON,
         title: codex.name || t('codex.title'),
-        value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : null,
+        value: pct !== null ? t('codex.remaining', { percent: String(Math.max(0, Math.round(100 - pct))) }) : null,
         valueTone: pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
         checked: sourceVisible(summary, codex.id),
         onToggle: (next) => postJson('/api-usage/visibility', { id: codex.id, visible: next }),
