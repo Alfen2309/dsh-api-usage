@@ -1,6 +1,6 @@
 {
   "name": "dsh-api-usage",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "API balance & usage monitor for DeepSeek Harness: a composer badge plus a per-key manager showing DeepSeek balances/today's spend, GLM Coding Plan quotas, and 7-day/90-day charts.",
   "type": "module",
   "license": "MIT",
@@ -29,6 +29,7 @@
   },
   "files": [
     "index.js",
+    "codex-usage.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -42,7 +43,8 @@
   },
   "scripts": {
     "build": "node build-client.mjs",
-    "check": "node --check index.js && node --check src/client.js"
+    "check": "node --check index.js && node --check codex-usage.js && node --check src/client.js",
+    "test": "node --test test/*.test.js"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-credentials": ">=0.2.1-rc.1",

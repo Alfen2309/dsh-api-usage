@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { credentialKey, credentialKeyId, credentialKeyScope, credentialRef } from '@deepseek-ai/dsh-credentials'
+import { queryCodexUsage } from './codex-usage.js'
 
 /**
  * dsh-api-usage — host half.
@@ -27,6 +28,7 @@ import { credentialKey, credentialKeyId, credentialKeyScope, credentialRef } fro
  *   - DeepSeek  GET <base>/user/balance                           (official docs)
  *   - GLM       GET <base>/api/monitor/usage/quota/limit          (coding-plan quota)
  *   - GLM       GET <base>/api/monitor/credit-usage/usage-detail  (today's spend)
+ *   - Codex     local app-server `account/rateLimits/read`        (ChatGPT plan)
  * The GLM monitor family authenticates with the raw key in the
  * `authorization` header; a Bearer retry covers endpoints that want it.
  */
@@ -38,6 +40,8 @@ const inject = ['webServer', 'credentials']
 const Config = z.object({
   deepseekBaseURL: z.string().default('https://api.deepseek.com'),
   glmBaseURL: z.string().default('https://open.bigmodel.cn'),
+  /** Optional Codex executable/script path. Empty = auto-detect local CLI. */
+  codexCommand: z.string().default(''),
   pollSeconds: z.number().default(60),
   lowBalance: z.number().default(20),
   /** Days of metered history kept in the local ledger (default ~13 months). */
@@ -1004,6 +1008,18 @@ function apply(ctx, config) {
   const deepseekBase = config.deepseekBaseURL
   const glmBase = config.glmBaseURL
 
+  /* Concurrent browser tabs share one bounded Codex quota read. */
+  let codexPending = null
+  const readCodex = () => {
+    if (codexPending !== null) return codexPending
+    const pending = queryCodexUsage(config.codexCommand).catch(() => ({
+      available: false, signedIn: false, ok: false, error: 'CODEX_UNAVAILABLE',
+    }))
+    codexPending = pending
+    void pending.finally(() => { if (codexPending === pending) codexPending = null })
+    return pending
+  }
+
   /* Local DeepSeek spend meter: the balance API has no usage history, so we
    * store the usage blocks the stream reports (plus per-request search fees)
    * in a small daily ledger and price them on read. */
@@ -1072,8 +1088,9 @@ function apply(ctx, config) {
           return pending
         }
 
-        const [account, ...keyResults] = await Promise.all([
+        const [account, codex, ...keyResults] = await Promise.all([
           queryAccount(ctx),
+          readCodex(),
           ...sources.map(async (source) => {
             const credential = await resolveSourceKey(ctx, source)
             const entry = {
@@ -1156,6 +1173,7 @@ function apply(ctx, config) {
             .filter((entry) => entry.vendor === 'deepseek')
             .map((entry) => ({ ...entry, spend: spendFor([entry.origin]) })),
           glm: keyResults.filter((entry) => entry.vendor === 'glm'),
+          codex,
           account: {
             ...account,
             spend: spendFor(['deepseek-account']),

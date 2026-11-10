@@ -15,6 +15,7 @@ DeepSeek Harness（dsh）插件：在输入框工具行显示 **DeepSeek 余额 
 ```
 📊 ≈¥9,999.99/¥9,999,999.00   ← DeepSeek：今日消耗 / 余额
 📊 888/12,000                 ← GLM：5 小时窗口已用 / 总量
+📊 53% 已用                   ← Codex：ChatGPT 订阅主要窗口
 📊 未选中                      ← 没有可显示的数据源
 ```
 
@@ -40,6 +41,7 @@ DeepSeek Harness（dsh）插件：在输入框工具行显示 **DeepSeek 余额 
 - **消耗行**：今日消耗、今日 token 消耗（输入 / 输出 / 缓存命中，按计费口径拆分）、调用次数、可用状态、赠金/充值余额（合并一行）
 - **图表**：ECharts 双轴柱状图（近 7 天：金额 ¥ 保留两位小数 + token 消耗，两个 y 轴各自量纲，附图例）+ 日历热力图（近 90 天，GitHub 贡献图风格，周×星期排列、月份标签；可切换 金额/Token 着色，悬停同时显示当日 ¥、token 与调用次数）
 - **GLM 卡片**：5 小时窗口 / 周配额 / MCP 工具额度的进度条（已用百分比、重置倒计时）+ 今日消耗（积分/tokens）
+- **Codex 卡片**：读取本机 Codex CLI 已登录的 ChatGPT 账号，显示主要/次要窗口的**已用**百分比、重置倒计时与可用 credits；没有订阅额度时明确显示未登录/未找到 CLI/查询失败
 - 每个数据源可独立开关是否计入徽标聚合
 
 ### API key 管理
@@ -56,8 +58,11 @@ DeepSeek Harness（dsh）插件：在输入框工具行显示 **DeepSeek 余额 
 | DeepSeek 账号 | Host `deepseekAccount` 服务 | DSH 登录会话 | 已登录账号资料与钱包余额 |
 | GLM Coding Plan | `GET {host}/api/monitor/usage/quota/limit` | Coding key | 5 小时 / 周 / MCP 额度、套餐等级、重置时间 |
 | GLM Coding Plan | `GET {host}/api/monitor/credit-usage/usage-detail` | Coding key | 今日模型消耗（积分 / tokens） |
+| Codex 订阅 | 本机 Codex app-server 的 `account/rateLimits/read` | 本机 Codex ChatGPT 登录 | 主要/次要额度窗口已用百分比与重置时间 |
 
 GLM host 默认 `https://open.bigmodel.cn`，国际站可在插件配置改成 `https://api.z.ai`。
+
+Codex 额度不需要粘贴 API key：插件启动本机 `codex app-server`，先确认 `account/read` 的登录类型是 `chatgpt`，再读额度。普通 OpenAI API key 的计费与 ChatGPT Codex 订阅额度是不同产品，此处只查后者；登录凭据、账号 ID、邮箱和原始错误都不会返回给浏览器。
 
 ### DeepSeek 今日消耗（本地记账）
 
@@ -98,6 +103,7 @@ dsh plugin --profile desktop add "link:C:\MY\project\dsh-plugins\dsh-api-usage"
 | --- | --- | --- |
 | `deepseekBaseURL` | `https://api.deepseek.com` | DeepSeek API 基础地址 |
 | `glmBaseURL` | `https://open.bigmodel.cn` | GLM API 基础地址（国际站用 `https://api.z.ai`） |
+| `codexCommand` | `""` | 可选的 Codex CLI 可执行文件或 `codex.js` 路径；留空先找桌面 profile 里的 `@openai/codex`，再退回 PATH 上的 `codex` |
 | `pollSeconds` | `60` | 自动刷新间隔（秒） |
 | `lowBalance` | `20` | 低余额告警阈值（数字变色） |
 | `retainDays` | `400` | 本地账本保留天数（超过自动裁剪） |
@@ -111,6 +117,7 @@ dsh plugin --profile desktop add "link:C:\MY\project\dsh-plugins\dsh-api-usage"
 npm install          # 安装 echarts / esbuild
 npm run build        # 构建 client.js（ECharts 内联打包，无 CDN 依赖）
 npm run check        # 语法检查
+npm test             # Codex app-server 协议与脱敏测试
 ```
 
 - 源码在 `src/client.js`，`client.js` 是构建产物（不要直接改）
@@ -120,7 +127,7 @@ npm run check        # 语法检查
 ## 安全
 
 - API key 只在 **Host 进程**内解析使用，**不会发送到浏览器**
-- 前端只接收余额、配额、用量与 key 后 4 位掩码
+- 前端只接收余额、配额、用量与 key 后 4 位掩码；Codex 结果只含套餐类型、额度窗口与 credits，不含账号资料、令牌或原始错误
 - 所有接口响应带 `Cache-Control: no-store`
 
 ## 已知限制

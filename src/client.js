@@ -72,6 +72,20 @@ window.__ModuleLoader__.load({
       'glm.todayTokens': '{tokens} tokens',
       'glm.resetIn': '{time} 后重置',
       'glm.noPlan': '暂无有效 Coding Plan',
+      'codex.title': 'Codex 订阅用量',
+      'codex.signedOut': '请先在 Codex CLI 登录 ChatGPT 账号',
+      'codex.unavailable': '未找到 Codex CLI；可在插件配置中指定 codexCommand',
+      'codex.queryFailed': '暂时无法查询 Codex 用量（{code}）',
+      'codex.used': '{percent}% 已用',
+      'codex.windowUsed': '{window} · 已用',
+      'codex.primary': '主要窗口',
+      'codex.secondary': '次要窗口',
+      'codex.window5h': '5 小时窗口',
+      'codex.window7d': '7 天窗口',
+      'codex.plan': 'ChatGPT {plan}',
+      'codex.credits': '剩余 credits {balance}',
+      'codex.unlimited': 'credits 不限量',
+      'codex.hint': '通过本机 Codex 登录状态读取 ChatGPT 订阅额度；百分比是已用量，不是剩余额度。',
       'spend.title': 'DeepSeek 今日消耗（本地记账）',
       'spend.hint': 'DeepSeek 官方没有用量接口，这里按 DSH 实际调用上报的 token 用量 × 官方价目表在本地估算，只统计 DSH 自身的调用，不包含其它客户端；网页搜索按请求次数计费，其模型 token 无法观测、不计入。',
       'spend.cost': '¥{amount}',
@@ -145,6 +159,20 @@ window.__ModuleLoader__.load({
       'glm.todayTokens': '{tokens} tokens',
       'glm.resetIn': 'resets in {time}',
       'glm.noPlan': 'No active Coding Plan',
+      'codex.title': 'Codex subscription usage',
+      'codex.signedOut': 'Sign in to a ChatGPT account in Codex CLI first',
+      'codex.unavailable': 'Codex CLI not found; set codexCommand in plugin settings',
+      'codex.queryFailed': 'Codex usage temporarily unavailable ({code})',
+      'codex.used': '{percent}% used',
+      'codex.windowUsed': '{window} · used',
+      'codex.primary': 'Primary window',
+      'codex.secondary': 'Secondary window',
+      'codex.window5h': '5-hour window',
+      'codex.window7d': '7-day window',
+      'codex.plan': 'ChatGPT {plan}',
+      'codex.credits': '{balance} credits remaining',
+      'codex.unlimited': 'Unlimited credits',
+      'codex.hint': 'Reads ChatGPT subscription limits through local Codex sign-in. Percentages show usage, not remaining quota.',
       'spend.title': "DeepSeek today's spend (local meter)",
       'spend.hint': 'DeepSeek exposes no usage API. This figure is estimated locally from the token usage DSH itself reports, priced against the official rate card; calls made by other clients are not included. Web search is counted per request — its model tokens are not observable and stay unmetered.',
       'spend.cost': '¥{amount}',
@@ -641,7 +669,37 @@ window.__ModuleLoader__.load({
         })
       }
 
+      const codex = summary.codex
+      if (codex && codex.signedIn) {
+        const primary = codex.ok && codex.data ? codex.data.primary : null
+        const secondary = codex.ok && codex.data ? codex.data.secondary : null
+        const pct = toNumberOrNull(primary && primary.usedPercent)
+        const secondaryPct = toNumberOrNull(secondary && secondary.usedPercent)
+        rows.push({
+          id: 'codex:chatgpt',
+          kind: 'codex',
+          icon: 'chart',
+          name: t('codex.title'),
+          value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : '—',
+          tone: !codex.ok ? 'dauw-bad' : pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
+          detail: [
+            codex.data && codex.data.planType ? t('codex.plan', { plan: codex.data.planType }) : t('codex.title'),
+            pct !== null ? `${codexWindowLabel(primary, 'primary', t)} · ${t('codex.used', { percent: String(Math.round(pct)) })}` : null,
+            secondaryPct !== null ? `${codexWindowLabel(secondary, 'secondary', t)} · ${t('codex.used', { percent: String(Math.round(secondaryPct)) })}` : null,
+            codex.ok ? t('codex.hint') : t('codex.queryFailed', { code: codex.error ?? '?' }),
+          ].filter((line) => line !== null),
+        })
+      }
+
       return rows
+    }
+
+    /** Human label for a Codex quota window, by its advertised duration. */
+    function codexWindowLabel(window, role, t) {
+      const duration = toNumberOrNull(window && window.windowDurationMins)
+      if (duration === 300) return t('codex.window5h')
+      if (duration === 10080) return t('codex.window7d')
+      return t(role === 'primary' ? 'codex.primary' : 'codex.secondary')
     }
 
     /* ── icons ─────────────────────────────────────────────────────────── */
@@ -1037,6 +1095,7 @@ window.__ModuleLoader__.load({
       }
       for (const entry of summary.deepseek || []) list.push({ id: entry.id, kind: 'deepseek', name: entry.label, entry })
       for (const entry of summary.glm || []) list.push({ id: entry.id, kind: 'glm', name: entry.label, entry })
+      if (summary.codex && summary.codex.signedIn) list.push({ id: 'codex:chatgpt', kind: 'codex', name: 'Codex', entry: summary.codex })
       return list
     }
 
@@ -1056,6 +1115,11 @@ window.__ModuleLoader__.load({
     /** `≈today/balance` for DeepSeek sources; `used/total` for GLM. */
     function badgeText(summary, source, t) {
       if (source === null) return t('badge.none')
+      if (source.kind === 'codex') {
+        const window = source.entry.ok && source.entry.data ? source.entry.data.primary : null
+        const pct = toNumberOrNull(window && window.usedPercent)
+        return pct === null ? '—' : t('codex.used', { percent: String(Math.round(pct)) })
+      }
       if (source.kind === 'glm') {
         const session = source.entry.ok && source.entry.data && source.entry.data.windows ? source.entry.data.windows.session : null
         const used = toNumberOrNull(session && session.used)
@@ -1500,6 +1564,63 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    /**
+     * ChatGPT subscription quota read through the local Codex CLI. Shows the
+     * primary/secondary windows as *used* percentages; an API-key login has no
+     * subscription quota, so it is reported as signed-out rather than empty.
+     */
+    function CodexCard(props) {
+      const { t, codex, summary } = props
+      const selection = useSelection()
+      if (!codex || !codex.signedIn) {
+        return h('div', { className: 'dauw-card' },
+          h('div', { className: 'dauw-card-top' },
+            h('span', { className: 'dauw-card-icon' }, CHART_ICON),
+            h('span', { className: 'dauw-card-title' }, t('codex.title'))),
+          h('p', { className: 'dauw-notice' },
+            codex && !codex.available ? t('codex.unavailable') : t('codex.signedOut')))
+      }
+      const data = codex.ok ? codex.data : null
+      const primary = data && data.primary
+      const pct = toNumberOrNull(primary && primary.usedPercent)
+      const windowRow = (window, role) => window
+        ? h(WindowRow, {
+            t,
+            window: {
+              percentage: window.usedPercent,
+              nextResetTime: window.resetsAt === null ? null : window.resetsAt * 1000,
+              used: null,
+              total: null,
+            },
+            label: t('codex.windowUsed', { window: codexWindowLabel(window, role, t) }),
+            unit: 'codex.used',
+          })
+        : null
+      return h(CardShell, {
+        t,
+        icon: CHART_ICON,
+        title: t('codex.title'),
+        value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : null,
+        valueTone: pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
+        checked: sourceVisible(summary, 'codex:chatgpt'),
+        onToggle: (next) => postJson('/api-usage/visibility', { id: 'codex:chatgpt', visible: next }),
+        badgeActive: effectiveSelection(summary, selection) === 'codex:chatgpt',
+        onPickBadge: () => writeLocalSelection('codex:chatgpt'),
+        footer: !codex.ok
+          ? h('p', { className: 'dauw-error' }, t('codex.queryFailed', { code: codex.error ?? '?' }))
+          : null,
+      },
+        data && data.planType ? h('div', { className: 'dauw-card-sub' }, t('codex.plan', { plan: data.planType })) : null,
+        windowRow(primary, 'primary'),
+        windowRow(data && data.secondary, 'secondary'),
+        data && data.credits && data.credits.unlimited
+          ? h('div', { className: 'dauw-card-sub' }, t('codex.unlimited'))
+          : data && data.credits && data.credits.hasCredits && data.credits.balance !== null
+            ? h('div', { className: 'dauw-card-sub' }, t('codex.credits', { balance: data.credits.balance }))
+            : null,
+        h('p', { className: 'dauw-notice' }, t('codex.hint')))
+    }
+
     function KeyManager(props) {
       const t = props.t
       const [keys, setKeys] = React.useState([])
@@ -1666,6 +1787,9 @@ window.__ModuleLoader__.load({
                   h('span', null, t('sources.count', { count: String(glmCount) }))),
                 ...(summary.glm || []).map((entry) => h(GlmKeyCard, { key: entry.id, t, entry, summary })))
             : null,
+          h('section', { key: 'codex', className: 'dauw-group' },
+            h('div', { className: 'dauw-group-title' }, h('b', null, t('codex.title'))),
+            h(CodexCard, { t, codex: summary.codex, summary })),
           h('section', { key: 'src', className: 'dauw-group' },
             h('div', { className: 'dauw-group-title' }, h('b', null, t('sources.title'))),
             h('div', { className: 'dauw-card' }, h('p', { className: 'dauw-notice' }, t('sources.hint')))),
