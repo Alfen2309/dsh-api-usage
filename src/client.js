@@ -78,6 +78,14 @@ window.__ModuleLoader__.load({
       'codex.queryFailed': '暂时无法查询 Codex 用量（{code}）',
       'codex.used': '{percent}% 已用',
       'codex.remaining': '剩余 {percent}%',
+      'codex.resetAt': '{clock} 重置（{countdown} 后）',
+      'codex.windowLine': '{window} 剩余 {percent}%',
+      'codex.noWeekly': '周额度：暂无数据',
+      'codex.reset': '重置',
+      'codex.short5h': '5h',
+      'codex.short7d': '7d',
+      'codex.shortPrimary': '主',
+      'codex.shortSecondary': '次',
       'group.codex': 'Codex',
       'group.glm': 'GLM Coding Plan',
       'group.deepseek': 'DeepSeek',
@@ -171,6 +179,14 @@ window.__ModuleLoader__.load({
       'codex.queryFailed': 'Codex usage temporarily unavailable ({code})',
       'codex.used': '{percent}% used',
       'codex.remaining': '{percent}% left',
+      'codex.resetAt': 'resets {clock} (in {countdown})',
+      'codex.windowLine': '{window} {percent}% left',
+      'codex.noWeekly': 'Weekly quota: no data',
+      'codex.reset': 'resets',
+      'codex.short5h': '5h',
+      'codex.short7d': '7d',
+      'codex.shortPrimary': 'P',
+      'codex.shortSecondary': 'S',
       'group.codex': 'Codex',
       'group.glm': 'GLM Coding Plan',
       'group.deepseek': 'DeepSeek',
@@ -242,6 +258,8 @@ window.__ModuleLoader__.load({
       '@keyframes dauw-fade-up{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}',
       '.dauw-panel-head{flex:none;padding:6px 10px 8px;color:var(--dsw-alias-label-tertiary,#999);font-size:12px}',
       '.dauw-panel-group{flex:none;padding:7px 10px 3px;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;letter-spacing:.02em}',
+      '.dauw-panel-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}',
+      '.dauw-panel-sub{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.dauw-panel-empty{padding:10px;color:var(--dsw-alias-label-secondary,#666)}',
       '.dauw-panel-row{display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;border:none;background:transparent;border-radius:9px;padding:8px 10px;cursor:pointer;font-family:inherit;font-size:13px;color:inherit;text-align:left}',
       '.dauw-panel-row:hover{background:var(--dsw-alias-bg-layer-2,#f0f0f0)}',
@@ -408,6 +426,16 @@ window.__ModuleLoader__.load({
       } catch {
         return ''
       }
+    }
+
+    /** Wall-clock `MM-DD HH:MM` for a reset instant, so "reset at" is readable. */
+    function formatClock(ms) {
+      const n = toNumberOrNull(ms)
+      if (n === null) return ''
+      const d = new Date(n)
+      if (Number.isNaN(d.getTime())) return ''
+      const pad = (value) => String(value).padStart(2, '0')
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
     }
 
     function pickBalanceRow(balanceInfos) {
@@ -1275,14 +1303,51 @@ window.__ModuleLoader__.load({
           role: 'menuitemradio',
           'aria-checked': active ? 'true' : 'false',
           className: 'dauw-panel-row' + (active ? ' dauw-panel-row-active' : ''),
+          title: candidate.kind === 'codex' ? codexTitle(candidate.entry, t) : undefined,
           onClick: () => pick(candidate.id),
         },
           h('span', { className: 'dauw-panel-radio' }, active ? h('span', { className: 'dauw-panel-radio-dot' }) : null),
           h('span', { className: 'dauw-panel-icon' }, ROW_ICONS[candidate.kind === 'account' ? 'account' : 'key'] ?? CHART_ICON),
-          h('span', { className: 'dauw-panel-name' }, candidate.name),
+          h('span', { className: 'dauw-panel-text' },
+            h('span', { className: 'dauw-panel-name' }, candidate.name),
+            candidate.kind === 'codex' ? h('span', { className: 'dauw-panel-sub' }, codexSummary(candidate.entry, t)) : null),
           h('span', { className: 'dauw-panel-value' }, badgeText(summary, candidate, t))))
       }
       return children
+    }
+
+    /** Compact second line for a Codex panel row: both windows and the reset. */
+    function codexSummary(entry, t) {
+      if (entry === null || entry === undefined || entry.ok !== true || entry.data === null) return ''
+      const parts = []
+      for (const [window, role] of [[entry.data.primary, 'primary'], [entry.data.secondary, 'secondary']]) {
+        if (!window) continue
+        const left = Math.max(0, Math.round(100 - window.usedPercent))
+        const short = toNumberOrNull(window.windowDurationMins) === 300 ? t('codex.short5h')
+          : toNumberOrNull(window.windowDurationMins) === 10080 ? t('codex.short7d')
+            : t(role === 'primary' ? 'codex.shortPrimary' : 'codex.shortSecondary')
+        parts.push(`${short} ${left}%`)
+      }
+      const reset = entry.data.primary !== null && entry.data.primary !== undefined && entry.data.primary.resetsAt !== null
+        ? `${formatClock(entry.data.primary.resetsAt * 1000)} ${t('codex.reset')}`
+        : ''
+      return [parts.join(' · '), reset].filter((part) => part !== '').join(' · ')
+    }
+
+    /** Multi-line hover text: both windows and their reset instants. */
+    function codexTitle(entry, t) {
+      if (entry === null || entry === undefined || entry.ok !== true || entry.data === null) {
+        return t('codex.queryFailed', { code: (entry && entry.error) || '?' })
+      }
+      const lines = []
+      if (entry.data.planType) lines.push(t('codex.plan', { plan: entry.data.planType }))
+      for (const [window, role] of [[entry.data.primary, 'primary'], [entry.data.secondary, 'secondary']]) {
+        if (!window) continue
+        const left = Math.max(0, Math.round(100 - window.usedPercent))
+        const reset = window.resetsAt === null ? '' : formatClock(window.resetsAt * 1000)
+        lines.push(`${t('codex.windowLine', { window: codexWindowLabel(window, role, t), percent: String(left) })}${reset === '' ? '' : ` · ${reset}`}`)
+      }
+      return lines.join('\n')
     }
 
     /** Badge subject: the local choice, the Host choice, else the account. */
@@ -1502,7 +1567,12 @@ window.__ModuleLoader__.load({
             ? h('span', { className: 'dauw-bar-count' }, t(props.unit, { used: formatCredits(used), total: formatCredits(total) }))
             : null,
           pct !== null ? h('span', { className: 'dauw-bar-pct' + tone }, `${Math.round(pct)}%`) : null,
-          countdown !== null ? h('span', { className: 'dauw-bar-reset' }, t('glm.resetIn', { time: countdown })) : null),
+          countdown !== null
+            ? h('span', { className: 'dauw-bar-reset' },
+                formatClock(props.absoluteReset) !== ''
+                  ? t('codex.resetAt', { clock: formatClock(props.absoluteReset), countdown })
+                  : t('glm.resetIn', { time: countdown }))
+            : null),
         h(Bar, { pct: pct ?? 0 }))
     }
 
@@ -1765,6 +1835,7 @@ window.__ModuleLoader__.load({
               total: null,
             },
             tonePct: window.usedPercent,
+            absoluteReset: window.resetsAt === null ? null : window.resetsAt * 1000,
             label: t('codex.windowLeft', { window: codexWindowLabel(window, role, t) }),
             unit: 'codex.used',
           })
@@ -1786,6 +1857,7 @@ window.__ModuleLoader__.load({
         data && data.planType ? h('div', { className: 'dauw-card-sub' }, t('codex.plan', { plan: data.planType })) : null,
         windowRow(primary, 'primary'),
         windowRow(data && data.secondary, 'secondary'),
+        data !== null && !data.secondary ? h('div', { className: 'dauw-card-sub' }, t('codex.noWeekly')) : null,
         data && data.credits && data.credits.unlimited
           ? h('div', { className: 'dauw-card-sub' }, t('codex.unlimited'))
           : data && data.credits && data.credits.hasCredits && data.credits.balance !== null
