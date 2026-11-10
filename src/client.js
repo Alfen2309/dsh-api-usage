@@ -461,10 +461,10 @@ window.__ModuleLoader__.load({
 
     /** Display name for one subscription account; never invents an identity. */
     function codexAccountName(meta, index) {
-      const label = meta !== null && typeof meta.label === 'string' ? meta.label.trim() : ''
-      if (label !== '') return label
       const email = meta !== null && typeof meta.email === 'string' ? meta.email.trim() : ''
       if (email !== '') return email
+      const label = meta !== null && typeof meta.label === 'string' ? meta.label.trim() : ''
+      if (label !== '') return label
       return `Codex #${index + 1}`
     }
 
@@ -522,7 +522,12 @@ window.__ModuleLoader__.load({
       const status = await call('status', {})
       const statusValue = status !== null && typeof status === 'object' && status.ok === true ? status.value : null
       const meta = statusValue !== null && typeof statusValue === 'object' && Array.isArray(statusValue.accounts) ? statusValue.accounts : []
-      const activeRaw = statusValue !== null && typeof statusValue === 'object' && typeof statusValue.activeId === 'string' ? statusValue.activeId : null
+      /* `status` marks the selected account with `active`; older payloads may
+       * still carry a bare `activeId`. */
+      const activeMeta = meta.find((candidate) => candidate !== null && typeof candidate === 'object' && candidate.active === true) ?? null
+      const activeRaw = activeMeta !== null && typeof activeMeta.id === 'string'
+        ? activeMeta.id
+        : (statusValue !== null && typeof statusValue === 'object' && typeof statusValue.activeId === 'string' ? statusValue.activeId : null)
       const accounts = []
       entries.forEach((entry, index) => {
         if (entry === null || typeof entry !== 'object' || typeof entry.id !== 'string') return

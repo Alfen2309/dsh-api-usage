@@ -48,23 +48,36 @@ test('queries the plugin HTTP RPC channel, not a bare channel name', async () =>
   assert.equal(calls[1].method, 'codex-subscription/status')
 })
 
-test('lists every subscription account, not just the selected one', async () => {
+test('lists every subscription account and names it by e-mail', async () => {
   const { read } = load({
     'usage/accounts': { ok: true, value: { accounts: [
       { id: 'acc-1', usage: usageOf(12) },
       { id: 'acc-2', usage: usageOf(56) },
     ] } },
-    status: { ok: true, value: { activeId: 'acc-2', accounts: [
-      { id: 'acc-1', label: 'Work' },
-      { id: 'acc-2', label: 'Personal' },
+    status: { ok: true, value: { accounts: [
+      { id: 'acc-1', label: 'Account 1', email: 'work@example.com', active: false },
+      { id: 'acc-2', label: 'Account 2', email: 'me@example.com', active: true },
     ] } },
   })
   const result = await read()
   assert.equal(result.accounts.length, 2)
-  assert.equal(result.accounts[0].name, 'Work')
-  assert.equal(result.accounts[1].name, 'Personal')
+  assert.equal(result.accounts[0].name, 'work@example.com')
+  assert.equal(result.accounts[1].name, 'me@example.com')
   assert.equal(result.accounts[1].data.primary.usedPercent, 56)
   assert.equal(result.activeId, 'codex:acc-2')
+})
+
+test('falls back to the account label, then a positional name', async () => {
+  const { read } = load({
+    'usage/accounts': { ok: true, value: { accounts: [
+      { id: 'acc-1', usage: usageOf(12) },
+      { id: 'acc-2', usage: usageOf(56) },
+    ] } },
+    status: { ok: true, value: { accounts: [{ id: 'acc-1', label: 'Work laptop' }] } },
+  })
+  const result = await read()
+  assert.equal(result.accounts[0].name, 'Work laptop')
+  assert.equal(result.accounts[1].name, 'Codex #2')
 })
 
 test('converts window seconds and drops private fields', async () => {
