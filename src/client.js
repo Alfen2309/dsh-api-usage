@@ -86,6 +86,7 @@ window.__ModuleLoader__.load({
       'codex.credits': '剩余 credits {balance}',
       'codex.unlimited': 'credits 不限量',
       'codex.hint': '通过本机 Codex 登录状态读取 ChatGPT 订阅额度；百分比是已用量，不是剩余额度。',
+      'codex.viaSubscription': '额度来源：Codex Subscription 插件（复用其 ChatGPT 登录）',
       'spend.title': 'DeepSeek 今日消耗（本地记账）',
       'spend.hint': 'DeepSeek 官方没有用量接口，这里按 DSH 实际调用上报的 token 用量 × 官方价目表在本地估算，只统计 DSH 自身的调用，不包含其它客户端；网页搜索按请求次数计费，其模型 token 无法观测、不计入。',
       'spend.cost': '¥{amount}',
@@ -173,6 +174,7 @@ window.__ModuleLoader__.load({
       'codex.credits': '{balance} credits remaining',
       'codex.unlimited': 'Unlimited credits',
       'codex.hint': 'Reads ChatGPT subscription limits through local Codex sign-in. Percentages show usage, not remaining quota.',
+      'codex.viaSubscription': 'Quota from the Codex Subscription plugin (reuses its ChatGPT sign-in)',
       'spend.title': "DeepSeek today's spend (local meter)",
       'spend.hint': 'DeepSeek exposes no usage API. This figure is estimated locally from the token usage DSH itself reports, priced against the official rate card; calls made by other clients are not included. Web search is counted per request — its model tokens are not observable and stay unmetered.',
       'spend.cost': '¥{amount}',
@@ -416,6 +418,81 @@ window.__ModuleLoader__.load({
       return `${currency}${n % 1 === 0 ? n.toFixed(0) : n.toFixed(2)}`
     }
 
+    /* ── optional link to dsh-codex-subscription ───────────────────────── */
+
+    /* The subscription plugin owns the ChatGPT OAuth lifecycle and exposes
+     * `/codex-subscription` → `usage/accounts` over the page RPC. When it is
+     * installed and signed in, its reading wins over our CLI probe: it is the
+     * same account this DSH instance actually runs on, and it needs no second
+     * token refresh. Absence or failure simply falls back to the host summary. */
+    let clientCtx = null
+
+    function subscriptionRpc() {
+      try {
+        const connection = clientCtx !== null && typeof clientCtx.get === 'function' ? clientCtx.get('connection') : null
+        return connection !== null && connection !== undefined && connection.rpc !== undefined && typeof connection.rpc.call === 'function'
+          ? connection.rpc
+          : null
+      } catch {
+        return null
+      }
+    }
+
+    function codexWindow(value) {
+      const used = toNumberOrNull(value && value.usedPercent)
+      if (used === null) return null
+      return {
+        usedPercent: used,
+        windowDurationMins: toNumberOrNull(value.windowDurationMins),
+        resetsAt: toNumberOrNull(value.resetsAt),
+      }
+    }
+
+    /** Normalise the subscription plugin's account usage into our Codex shape. */
+    async function readSubscriptionCodex() {
+      const rpc = subscriptionRpc()
+      if (rpc === null) return null
+      let response
+      try {
+        response = await rpc.call('/codex-subscription', 'usage/accounts', {})
+      } catch {
+        return null
+      }
+      const value = response !== null && typeof response === 'object'
+        ? (response.ok === true ? response.value : undefined)
+        : undefined
+      const accounts = value !== null && typeof value === 'object' && Array.isArray(value.accounts) ? value.accounts : []
+      for (const account of accounts) {
+        const usage = account !== null && typeof account === 'object' ? account.usage : null
+        if (usage === null || typeof usage !== 'object' || !Array.isArray(usage.rateLimits)) continue
+        const limit = usage.rateLimits.find((entry) => entry && entry.id === 'codex') ?? usage.rateLimits[0]
+        const windows = limit !== null && typeof limit === 'object' && Array.isArray(limit.windows) ? limit.windows : []
+        const primary = codexWindow(windows[0])
+        const secondary = codexWindow(windows[1])
+        if (primary === null && secondary === null) continue
+        const credits = usage.credits !== null && typeof usage.credits === 'object'
+          ? {
+              balance: typeof usage.credits.balance === 'string' ? usage.credits.balance : null,
+              hasCredits: usage.credits.hasCredits === true,
+              unlimited: usage.credits.unlimited === true,
+            }
+          : null
+        return {
+          available: true,
+          signedIn: true,
+          ok: true,
+          source: 'subscription',
+          data: {
+            planType: typeof usage.planType === 'string' ? usage.planType : null,
+            primary,
+            secondary,
+            credits,
+          },
+        }
+      }
+      return null
+    }
+
     /* ── shared summary store (single poller) ──────────────────────────── */
 
     const store = {
@@ -436,7 +513,12 @@ window.__ModuleLoader__.load({
       try {
         const response = await fetch('/api-usage/summary', { method: 'GET', cache: 'no-store' })
         const json = await response.json()
-        if (json && json.ok) next = { phase: 'ready', summary: json, message: null }
+        if (json && json.ok) {
+          /* Prefer the subscription plugin's reading when it is signed in. */
+          const subscription = await readSubscriptionCodex().catch(() => null)
+          if (subscription !== null) json.codex = subscription
+          next = { phase: 'ready', summary: json, message: null }
+        }
         else next = { phase: 'error', summary: null, message: (json && (json.message || json.error)) || 'unknown error' }
       } catch (err) {
         next = { phase: 'error', summary: null, message: (err && err.message) || String(err) }
@@ -1618,6 +1700,9 @@ window.__ModuleLoader__.load({
           : data && data.credits && data.credits.hasCredits && data.credits.balance !== null
             ? h('div', { className: 'dauw-card-sub' }, t('codex.credits', { balance: data.credits.balance }))
             : null,
+        codex.source === 'subscription'
+          ? h('div', { className: 'dauw-card-sub' }, h('span', null, t('codex.viaSubscription')))
+          : null,
         h('p', { className: 'dauw-notice' }, t('codex.hint')))
     }
 
@@ -1817,6 +1902,9 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'locale']
 
     function apply(ctx) {
+      /* Kept for the optional `/codex-subscription` usage link: the RPC service
+       * is resolved lazily so a missing or disabled plugin simply falls back. */
+      clientCtx = ctx
       /* A plugin reload in the same page can leave the previous activation's
        * locale namespace registered, and re-registering it throws. A unique
        * namespace per activation keeps the newest dictionary live; the stale

@@ -62,6 +62,8 @@ DeepSeek Harness（dsh）插件：在输入框工具行显示 **DeepSeek 余额 
 
 GLM host 默认 `https://open.bigmodel.cn`，国际站可在插件配置改成 `https://api.z.ai`。
 
+**与 `dsh-codex-subscription` 联动**：若该插件已安装且已登录 ChatGPT，`API 用量` 直接复用它的额度读数（页面 RPC `/codex-subscription` → `usage/accounts`），卡片会标注「额度来源：Codex Subscription 插件」。它未安装、未登录或读取失败时，自动回退到本机 Codex CLI 查询。
+
 Codex 额度不需要粘贴 API key：插件启动本机 `codex app-server`，先确认 `account/read` 的登录类型是 `chatgpt`，再读额度。普通 OpenAI API key 的计费与 ChatGPT Codex 订阅额度是不同产品，此处只查后者；登录凭据、账号 ID、邮箱和原始错误都不会返回给浏览器。
 
 ### DeepSeek 今日消耗（本地记账）
