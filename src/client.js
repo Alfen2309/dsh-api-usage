@@ -421,7 +421,7 @@ window.__ModuleLoader__.load({
     /* ── optional link to dsh-codex-subscription ───────────────────────── */
 
     /* The subscription plugin owns the ChatGPT OAuth lifecycle and exposes
-     * `/codex-subscription` → `usage/accounts` over the page RPC. When it is
+     * `/codex-subscription` → `usage` over the page RPC. When it is
      * installed and signed in, its reading wins over our CLI probe: it is the
      * same account this DSH instance actually runs on, and it needs no second
      * token refresh. Absence or failure simply falls back to the host summary. */
@@ -443,54 +443,80 @@ window.__ModuleLoader__.load({
       if (used === null) return null
       return {
         usedPercent: used,
-        windowDurationMins: toNumberOrNull(value.windowDurationMins),
+        windowDurationMins: toNumberOrNull(value.windowDurationMins) ?? (toNumberOrNull(value.windowSeconds) === null ? null : value.windowSeconds / 60),
         resetsAt: toNumberOrNull(value.resetsAt),
       }
     }
 
-    /** Normalise the subscription plugin's account usage into our Codex shape. */
+    /** Display name for one subscription account; never invents an identity. */
+    function codexAccountName(meta, index) {
+      const label = meta !== null && typeof meta.label === 'string' ? meta.label.trim() : ''
+      if (label !== '') return label
+      const email = meta !== null && typeof meta.email === 'string' ? meta.email.trim() : ''
+      if (email !== '') return email
+      return `Codex #${index + 1}`
+    }
+
+    /** Turn one subscription `usage` reading into our Codex card shape. */
+    function codexEntry(id, name, usage) {
+      const base = { id, name, source: 'subscription', signedIn: true, available: true, ok: false, error: null, data: null }
+      if (usage === null || typeof usage !== 'object' || !Array.isArray(usage.rateLimits)) {
+        return { ...base, error: 'USAGE_UNAVAILABLE' }
+      }
+      const limit = usage.rateLimits.find((entry) => entry && entry.id === 'codex')
+      const windows = limit !== null && typeof limit === 'object' && Array.isArray(limit.windows) ? limit.windows : []
+      const primary = codexWindow(windows[0])
+      const secondary = codexWindow(windows[1])
+      if (primary === null && secondary === null) return { ...base, error: 'USAGE_UNAVAILABLE' }
+      const credits = usage.credits !== null && typeof usage.credits === 'object'
+        ? {
+            balance: typeof usage.credits.balance === 'string' ? usage.credits.balance : null,
+            hasCredits: usage.credits.hasCredits === true,
+            unlimited: usage.credits.unlimited === true,
+          }
+        : null
+      return {
+        ...base,
+        ok: true,
+        data: {
+          planType: typeof usage.planType === 'string' ? usage.planType : null,
+          primary,
+          secondary,
+          credits,
+        },
+      }
+    }
+
+    /**
+     * Read every signed-in subscription account, not just the selected one.
+     * Returns `{ activeId, accounts }` or null when the plugin cannot answer.
+     */
     async function readSubscriptionCodex() {
       const rpc = subscriptionRpc()
       if (rpc === null) return null
-      let response
-      try {
-        response = await rpc.call('/codex-subscription', 'usage/accounts', {})
-      } catch {
-        return null
-      }
-      const value = response !== null && typeof response === 'object'
-        ? (response.ok === true ? response.value : undefined)
-        : undefined
-      const accounts = value !== null && typeof value === 'object' && Array.isArray(value.accounts) ? value.accounts : []
-      for (const account of accounts) {
-        const usage = account !== null && typeof account === 'object' ? account.usage : null
-        if (usage === null || typeof usage !== 'object' || !Array.isArray(usage.rateLimits)) continue
-        const limit = usage.rateLimits.find((entry) => entry && entry.id === 'codex') ?? usage.rateLimits[0]
-        const windows = limit !== null && typeof limit === 'object' && Array.isArray(limit.windows) ? limit.windows : []
-        const primary = codexWindow(windows[0])
-        const secondary = codexWindow(windows[1])
-        if (primary === null && secondary === null) continue
-        const credits = usage.credits !== null && typeof usage.credits === 'object'
-          ? {
-              balance: typeof usage.credits.balance === 'string' ? usage.credits.balance : null,
-              hasCredits: usage.credits.hasCredits === true,
-              unlimited: usage.credits.unlimited === true,
-            }
-          : null
-        return {
-          available: true,
-          signedIn: true,
-          ok: true,
-          source: 'subscription',
-          data: {
-            planType: typeof usage.planType === 'string' ? usage.planType : null,
-            primary,
-            secondary,
-            credits,
-          },
+      const call = async (endpoint, payload) => {
+        try {
+          return await rpc.call('/codex-subscription', endpoint, payload)
+        } catch {
+          return null
         }
       }
-      return null
+      const response = await call('usage/accounts', {})
+      const value = response !== null && typeof response === 'object' && response.ok === true ? response.value : null
+      const entries = value !== null && typeof value === 'object' && Array.isArray(value.accounts) ? value.accounts : []
+      if (entries.length === 0) return null
+      const status = await call('status', {})
+      const statusValue = status !== null && typeof status === 'object' && status.ok === true ? status.value : null
+      const meta = statusValue !== null && typeof statusValue === 'object' && Array.isArray(statusValue.accounts) ? statusValue.accounts : []
+      const activeRaw = statusValue !== null && typeof statusValue === 'object' && typeof statusValue.activeId === 'string' ? statusValue.activeId : null
+      const accounts = []
+      entries.forEach((entry, index) => {
+        if (entry === null || typeof entry !== 'object' || typeof entry.id !== 'string') return
+        const info = meta.find((candidate) => candidate !== null && typeof candidate === 'object' && candidate.id === entry.id) ?? null
+        accounts.push(codexEntry(`codex:${entry.id}`, codexAccountName(info, index), entry.usage ?? null))
+      })
+      if (accounts.length === 0) return null
+      return { activeId: activeRaw === null ? null : `codex:${activeRaw}`, accounts }
     }
 
     /* ── shared summary store (single poller) ──────────────────────────── */
@@ -514,9 +540,16 @@ window.__ModuleLoader__.load({
         const response = await fetch('/api-usage/summary', { method: 'GET', cache: 'no-store' })
         const json = await response.json()
         if (json && json.ok) {
-          /* Prefer the subscription plugin's reading when it is signed in. */
+          /* Prefer the subscription plugin's accounts when it is signed in. */
           const subscription = await readSubscriptionCodex().catch(() => null)
-          if (subscription !== null) json.codex = subscription
+          if (subscription !== null) {
+            json.codexAccounts = subscription.accounts
+            /* Badge default: the account the subscription plugin has selected. */
+            const preferred = subscription.accounts.find((entry) => entry.id === subscription.activeId)
+              ?? subscription.accounts.find((entry) => entry.ok)
+              ?? null
+            if (preferred !== null) json.codex = preferred
+          }
           next = { phase: 'ready', summary: json, message: null }
         }
         else next = { phase: 'error', summary: null, message: (json && (json.message || json.error)) || 'unknown error' }
@@ -751,21 +784,20 @@ window.__ModuleLoader__.load({
         })
       }
 
-      const codex = summary.codex
-      if (codex && codex.signedIn) {
+      for (const codex of codexSources(summary)) {
         const primary = codex.ok && codex.data ? codex.data.primary : null
         const secondary = codex.ok && codex.data ? codex.data.secondary : null
         const pct = toNumberOrNull(primary && primary.usedPercent)
         const secondaryPct = toNumberOrNull(secondary && secondary.usedPercent)
         rows.push({
-          id: 'codex:chatgpt',
+          id: codex.id,
           kind: 'codex',
           icon: 'chart',
-          name: t('codex.title'),
+          name: codex.name || t('codex.title'),
           value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : '—',
           tone: !codex.ok ? 'dauw-bad' : pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
           detail: [
-            codex.data && codex.data.planType ? t('codex.plan', { plan: codex.data.planType }) : t('codex.title'),
+            codex.data && codex.data.planType ? t('codex.plan', { plan: codex.data.planType }) : (codex.name || t('codex.title')),
             pct !== null ? `${codexWindowLabel(primary, 'primary', t)} · ${t('codex.used', { percent: String(Math.round(pct)) })}` : null,
             secondaryPct !== null ? `${codexWindowLabel(secondary, 'secondary', t)} · ${t('codex.used', { percent: String(Math.round(secondaryPct)) })}` : null,
             codex.ok ? t('codex.hint') : t('codex.queryFailed', { code: codex.error ?? '?' }),
@@ -774,6 +806,24 @@ window.__ModuleLoader__.load({
       }
 
       return rows
+    }
+
+    /** Every Codex source: subscription accounts when present, else the CLI reading. */
+    function codexSources(summary) {
+      if (Array.isArray(summary.codexAccounts) && summary.codexAccounts.length > 0) return summary.codexAccounts
+      const codex = summary.codex
+      if (codex && codex.signedIn) {
+        return [{
+          id: 'codex:chatgpt',
+          name: '',
+          ok: codex.ok === true,
+          error: codex.error ?? null,
+          data: codex.data ?? null,
+          source: codex.source,
+          signedIn: true,
+        }]
+      }
+      return []
     }
 
     /** Human label for a Codex quota window, by its advertised duration. */
@@ -1177,7 +1227,7 @@ window.__ModuleLoader__.load({
       }
       for (const entry of summary.deepseek || []) list.push({ id: entry.id, kind: 'deepseek', name: entry.label, entry })
       for (const entry of summary.glm || []) list.push({ id: entry.id, kind: 'glm', name: entry.label, entry })
-      if (summary.codex && summary.codex.signedIn) list.push({ id: 'codex:chatgpt', kind: 'codex', name: 'Codex', entry: summary.codex })
+      for (const entry of codexSources(summary)) list.push({ id: entry.id, kind: 'codex', name: entry.name || 'Codex', entry })
       return list
     }
 
@@ -1652,15 +1702,15 @@ window.__ModuleLoader__.load({
      * subscription quota, so it is reported as signed-out rather than empty.
      */
     function CodexCard(props) {
-      const { t, codex, summary } = props
+      const { t, entry: codex, summary } = props
       const selection = useSelection()
-      if (!codex || !codex.signedIn) {
+      if (!codex || codex.signedIn === false || (codex.ok !== true && codex.signedIn === undefined)) {
         return h('div', { className: 'dauw-card' },
           h('div', { className: 'dauw-card-top' },
             h('span', { className: 'dauw-card-icon' }, CHART_ICON),
             h('span', { className: 'dauw-card-title' }, t('codex.title'))),
           h('p', { className: 'dauw-notice' },
-            codex && !codex.available ? t('codex.unavailable') : t('codex.signedOut')))
+            codex && codex.available === false ? t('codex.unavailable') : t('codex.signedOut')))
       }
       const data = codex.ok ? codex.data : null
       const primary = data && data.primary
@@ -1681,13 +1731,13 @@ window.__ModuleLoader__.load({
       return h(CardShell, {
         t,
         icon: CHART_ICON,
-        title: t('codex.title'),
+        title: codex.name || t('codex.title'),
         value: pct !== null ? t('codex.used', { percent: String(Math.round(pct)) }) : null,
         valueTone: pct !== null && pct >= 95 ? 'dauw-bad' : pct !== null && pct >= 80 ? 'dauw-warn' : '',
-        checked: sourceVisible(summary, 'codex:chatgpt'),
-        onToggle: (next) => postJson('/api-usage/visibility', { id: 'codex:chatgpt', visible: next }),
-        badgeActive: effectiveSelection(summary, selection) === 'codex:chatgpt',
-        onPickBadge: () => writeLocalSelection('codex:chatgpt'),
+        checked: sourceVisible(summary, codex.id),
+        onToggle: (next) => postJson('/api-usage/visibility', { id: codex.id, visible: next }),
+        badgeActive: effectiveSelection(summary, selection) === codex.id,
+        onPickBadge: () => writeLocalSelection(codex.id),
         footer: !codex.ok
           ? h('p', { className: 'dauw-error' }, t('codex.queryFailed', { code: codex.error ?? '?' }))
           : null,
@@ -1856,6 +1906,7 @@ window.__ModuleLoader__.load({
         const summary = state.summary
         const dsCount = (summary.deepseek || []).length
         const glmCount = (summary.glm || []).length
+        const codexList = codexSources(summary)
         body = [
           dsCount > 0 || (summary.account && summary.account.available)
             ? h('section', { key: 'ds', className: 'dauw-group' },
@@ -1873,8 +1924,12 @@ window.__ModuleLoader__.load({
                 ...(summary.glm || []).map((entry) => h(GlmKeyCard, { key: entry.id, t, entry, summary })))
             : null,
           h('section', { key: 'codex', className: 'dauw-group' },
-            h('div', { className: 'dauw-group-title' }, h('b', null, t('codex.title'))),
-            h(CodexCard, { t, codex: summary.codex, summary })),
+            h('div', { className: 'dauw-group-title' },
+              h('b', null, t('codex.title')),
+              codexList.length > 1 ? h('span', null, t('sources.count', { count: String(codexList.length) })) : null),
+            ...(codexList.length > 0
+              ? codexList.map((entry) => h(CodexCard, { key: entry.id, t, entry, summary }))
+              : [h(CodexCard, { key: 'codex:none', t, entry: summary.codex, summary })])),
           h('section', { key: 'src', className: 'dauw-group' },
             h('div', { className: 'dauw-group-title' }, h('b', null, t('sources.title'))),
             h('div', { className: 'dauw-card' }, h('p', { className: 'dauw-notice' }, t('sources.hint')))),

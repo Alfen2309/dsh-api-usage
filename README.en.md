@@ -61,7 +61,7 @@ One card per source, all with the same structure:
 
 The GLM host defaults to `https://open.bigmodel.cn`; set `glmBaseURL` to `https://api.z.ai` internationally.
 
-**Link with `dsh-codex-subscription`**: when that plugin is installed and signed in, the Codex card reuses its reading over the page RPC `/codex-subscription` → `usage/accounts` and labels the source; otherwise it falls back to the local Codex CLI probe.
+**Link with `dsh-codex-subscription`**: when that plugin is installed and signed in, the Codex card reuses its reading over the page RPC `/codex-subscription` → `usage/accounts` (one row/card per signed-in account; the badge follows the account selected there) and labels the source; otherwise it falls back to the local Codex CLI probe.
 
 Codex quota needs no pasted key: the plugin starts the local `codex app-server`, verifies `account/read` reports a `chatgpt` login, then reads the limits. OpenAI API-key billing and ChatGPT Codex subscription limits are separate products; only the latter is shown. Credentials, account IDs, e-mail addresses and raw upstream errors never reach the browser.
 
