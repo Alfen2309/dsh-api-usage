@@ -494,9 +494,12 @@ window.__ModuleLoader__.load({
     async function readSubscriptionCodex() {
       const rpc = subscriptionRpc()
       if (rpc === null) return null
+      /* The subscription plugin registers HTTP RPC endpoints under `/api`, so
+       * the channel is `/api` and the method carries the plugin prefix —
+       * exactly what its own client does. */
       const call = async (endpoint, payload) => {
         try {
-          return await rpc.call('/codex-subscription', endpoint, payload)
+          return await rpc.call('/api', `codex-subscription/${endpoint}`, payload)
         } catch {
           return null
         }

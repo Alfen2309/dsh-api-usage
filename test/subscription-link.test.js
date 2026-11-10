@@ -3,20 +3,22 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import { test } from 'node:test'
 
+/**
+ * Exercise the real adapter code from src/client.js against a fake RPC.
+ * `answers` maps the subscription endpoint name to its reply, so a test can
+ * make `status` fail while `usage/accounts` still answers.
+ */
 const source = readFileSync(new URL('../src/client.js', import.meta.url), 'utf8')
 const adapter = source.slice(source.indexOf('    function codexWindow('), source.indexOf('    /* ── shared summary store'))
 
-/**
- * Load the real adapter code with a fake RPC. `answers` maps endpoint → reply,
- * so a test can make `status` fail while `usage/accounts` still answers.
- */
 function load(answers) {
   const calls = []
   const context = vm.createContext({
     toNumberOrNull: value => typeof value === 'number' && Number.isFinite(value) ? value : null,
     subscriptionRpc: () => ({
-      call: async (channel, endpoint, payload) => {
-        calls.push({ channel, endpoint, payload })
+      call: async (channel, method, payload) => {
+        calls.push({ channel, method, payload })
+        const endpoint = String(method).replace(/^codex-subscription\//u, '')
         return answers[endpoint] ?? null
       },
     }),
@@ -35,8 +37,19 @@ const usageOf = (usedPercent, windowSeconds = 18000, extra = {}) => ({
   ...extra,
 })
 
-test('lists every subscription account, not just the selected one', async () => {
+test('queries the plugin HTTP RPC channel, not a bare channel name', async () => {
   const { read, calls } = load({
+    'usage/accounts': { ok: true, value: { accounts: [{ id: 'acc-1', usage: usageOf(12) }] } },
+    status: { ok: true, value: { accounts: [] } },
+  })
+  await read()
+  assert.equal(calls[0].channel, '/api')
+  assert.equal(calls[0].method, 'codex-subscription/usage/accounts')
+  assert.equal(calls[1].method, 'codex-subscription/status')
+})
+
+test('lists every subscription account, not just the selected one', async () => {
+  const { read } = load({
     'usage/accounts': { ok: true, value: { accounts: [
       { id: 'acc-1', usage: usageOf(12) },
       { id: 'acc-2', usage: usageOf(56) },
@@ -52,8 +65,6 @@ test('lists every subscription account, not just the selected one', async () => 
   assert.equal(result.accounts[1].name, 'Personal')
   assert.equal(result.accounts[1].data.primary.usedPercent, 56)
   assert.equal(result.activeId, 'codex:acc-2')
-  assert.equal(calls[0].endpoint, 'usage/accounts')
-  assert.equal(calls[1].endpoint, 'status')
 })
 
 test('converts window seconds and drops private fields', async () => {
